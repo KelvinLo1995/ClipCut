@@ -34,6 +34,7 @@
   <audio id="audioPlayer" class="hidden"></audio>
   <audio id="bgAudioPlayer" class="hidden"></audio>
   <input type="file" id="videoFileInput" accept="video/*, audio/*" class="hidden" />
+  <input type="file" id="appendVideoFileInput" accept="video/*, audio/*" class="hidden" />
   <input type="file" id="bgAudioFileInput" accept="audio/*" class="hidden" />
 
   <!-- 1. 頂部導覽列 -->
@@ -106,6 +107,9 @@
     <button id="btnSplit" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-[#292524] text-blue-400 active:bg-gray-700 flex-shrink-0">
       <i class="ph ph-scissors text-xl mb-1"></i><span class="text-[10px]">分割</span>
     </button>
+    <button id="btnMerge" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-[#292524] text-emerald-400 active:bg-gray-700 flex-shrink-0">
+      <i class="ph ph-link text-xl mb-1"></i><span class="text-[10px]">合併</span>
+    </button>
     <button id="btnClapSplit" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-yellow-900/40 text-yellow-500 active:bg-yellow-900/80 border border-yellow-700/50 flex-shrink-0">
       <i class="ph ph-hands-clapping text-xl mb-1"></i><span class="text-[10px]">拍手分割</span>
     </button>
@@ -132,6 +136,9 @@
     </button>
     <button id="btnAddBgAudio" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-purple-900/40 text-purple-400 border border-purple-700/50 active:bg-gray-700 flex-shrink-0">
       <i class="ph ph-music-note text-xl mb-1"></i><span class="text-[10px]">加配樂</span>
+    </button>
+    <button id="btnAddVideo" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-blue-900/40 text-blue-400 border border-blue-700/50 active:bg-gray-700 flex-shrink-0">
+      <i class="ph ph-video-camera text-xl mb-1"></i><span class="text-[10px]">加影片</span>
     </button>
   </section>
 
@@ -164,6 +171,21 @@
         <button id="btnConfirmNew" class="flex-1 py-2.5 rounded-lg bg-yellow-500 text-yellow-950 font-bold">選擇影片</button>
       </div>
     </div>
+  </div>
+
+  <!-- 拍手分割逐一確認 Modal -->
+  <div id="clapReviewModal" class="fixed bottom-24 left-1/2 -translate-x-1/2 z-[9999] bg-black/90 backdrop-blur-md hidden flex-col items-center justify-center p-4 rounded-2xl border border-[#292524] shadow-2xl w-11/12 max-w-sm">
+    <div class="flex items-center justify-between w-full mb-3">
+      <h2 class="text-sm font-bold text-white">審閱拍手分割 <span id="clapReviewProgress" class="text-yellow-500">1/3</span></h2>
+      <span id="clapReviewTime" class="text-xs font-mono text-gray-400 bg-gray-800 px-2 py-1 rounded">00:00.0</span>
+    </div>
+    <div class="flex gap-2 w-full">
+      <button id="btnClapPrev" class="flex-1 py-2 rounded-lg bg-gray-800 text-gray-300 flex flex-col items-center justify-center"><i class="ph ph-skip-back mb-1 text-lg"></i><span class="text-[10px]">上一個</span></button>
+      <button id="btnClapPreview" class="flex-1 py-2 rounded-lg bg-blue-900/40 text-blue-400 border border-blue-700/50 flex flex-col items-center justify-center"><i class="ph ph-play mb-1 text-lg"></i><span class="text-[10px]">預覽</span></button>
+      <button id="btnClapSkip" class="flex-1 py-2 rounded-lg bg-gray-800 text-gray-300 flex flex-col items-center justify-center"><i class="ph ph-skip-forward mb-1 text-lg"></i><span class="text-[10px]">跳過</span></button>
+      <button id="btnClapConfirm" class="flex-1 py-2 rounded-lg bg-yellow-500 text-yellow-950 font-bold flex flex-col items-center justify-center"><i class="ph ph-scissors mb-1 text-lg"></i><span class="text-[10px]">分割</span></button>
+    </div>
+    <button id="btnClapCancel" class="w-full mt-3 py-2 rounded-lg bg-red-900/40 text-red-400 border border-red-700/50 text-xs">結束審閱</button>
   </div>
 
   <!-- Toast 提示框 -->
@@ -224,17 +246,15 @@
 
     // --- 核心狀態管理 (State) ---
     const state = {
-      videoFile: null,
-      videoSrc: null,
-      videoDuration: 0,
+      mediaPool: {}, 
+      currentMediaId: null,
+      
       currentTime: 0, 
       isPlaying: false,
       
       clips: [], 
       subtitles: [],
       clipboard: null,
-      
-      waveformData: [],
       
       bgAudioSrc: null,
       bgAudioDuration: 0,
@@ -254,7 +274,10 @@
       dragClipInitialX: 0,
       isPanning: false,
       lastPanX: 0,
-      lastPlayedClipIndex: -1 
+      lastPlayedClipIndex: -1,
+      clapReviewPoints: [],
+      clapReviewIndex: 0,
+      playUntil: undefined
     };
 
     // --- DOM 元素綁定 ---
@@ -262,6 +285,7 @@
     const audioPlayer = document.getElementById('audioPlayer');
     const bgAudioPlayer = document.getElementById('bgAudioPlayer');
     const videoFileInput = document.getElementById('videoFileInput');
+    const appendVideoFileInput = document.getElementById('appendVideoFileInput');
     const bgAudioFileInput = document.getElementById('bgAudioFileInput');
     const previewCanvas = document.getElementById('previewCanvas');
     const previewCtx = previewCanvas.getContext('2d', { alpha: false });
@@ -274,7 +298,7 @@
     const timelineOverlay = document.getElementById('timelineOverlay');
     const timelineOverlayText = document.getElementById('timelineOverlayText');
 
-    const TRACK_CONFIG = { rulerH: 24, videoY: 26, videoH: 40, audioY: 68, audioH: 30, bgAudioY: 100, bgAudioH: 30 };
+    const TRACK_CONFIG = { rulerH: 24, videoY: 26, videoH: 40, audioY: 68, audioH: 30, freqY: 100, freqH: 24, snrY: 126, snrH: 24, bgAudioY: 152, bgAudioH: 30 };
 
     // --- 工具函數 ---
     function formatTime(sec) {
@@ -363,16 +387,49 @@
           return {
             clipIndex: i,
             sourceTime: clip.inPoint + offsetInClip,
-            speed: clipSpeed
+            speed: clipSpeed,
+            mediaId: clip.mediaId
           };
         }
         currentAcc += clipDurTimeline;
       }
-      return { clipIndex: -1, sourceTime: 0, speed: 1.0 };
+      return { clipIndex: -1, sourceTime: 0, speed: 1.0, mediaId: null };
+    }
+
+    async function processNewVideo(file, isAppend) {
+      const mediaId = 'm_' + Date.now();
+      const url = URL.createObjectURL(file);
+      state.mediaPool[mediaId] = { id: mediaId, file: file, src: url, duration: 0, waveformData: [], freqData: [], snrData: [], name: file.name };
+
+      const tempVid = document.createElement('video');
+      tempVid.src = url;
+      await new Promise(resolve => {
+          tempVid.onloadedmetadata = () => {
+              state.mediaPool[mediaId].duration = tempVid.duration;
+              resolve();
+          };
+          tempVid.onerror = resolve; 
+      });
+
+      if (!isAppend) {
+          state.clips = [{ mediaId, inPoint: 0, outPoint: state.mediaPool[mediaId].duration, speed: 1.0, name: "Clip 1" }];
+          state.currentMediaId = mediaId;
+          video.src = url;
+          audioPlayer.src = url;
+          video.load();
+          audioPlayer.load();
+      } else {
+          saveHistory();
+          state.clips.push({ mediaId, inPoint: 0, outPoint: state.mediaPool[mediaId].duration, speed: 1.0, name: `Clip ${state.clips.length + 1}` });
+      }
+
+      drawTimeline();
+      showToast("正在分析音訊波形...");
+      extractAudioAndWaveform(mediaId, file);
     }
 
     // --- 音訊極速切片提取器 ---
-    async function generateWaveformFromVideoDirect(file) {
+    async function generateWaveformFromVideoDirect(mediaId, file) {
       console.log("啟動極速切片探測模式 (iOS 相容安全模式)...");
       try {
         const chunkSize = Math.min(16 * 1024 * 1024, file.size);
@@ -381,16 +438,22 @@
         
         const numPoints = 1400;
         const fallbackWave = new Float32Array(numPoints);
-        const duration = state.videoDuration > 0 ? state.videoDuration : 10;
+        const fallbackFreq = new Float32Array(numPoints);
+        const fallbackSnr = new Float32Array(numPoints);
+        const duration = state.mediaPool[mediaId].duration > 0 ? state.mediaPool[mediaId].duration : 10;
         
         for (let i = 0; i < numPoints; i++) {
             const t = (i / numPoints) * duration;
             const spike = Math.random() > 0.98 ? 1.0 : 0; 
             const envelope = Math.abs(Math.sin(t * 3.14)) * 0.5 + Math.random() * 0.4;
             fallbackWave[i] = spike > 0 ? spike : envelope * 0.8; 
+            fallbackFreq[i] = spike > 0 ? 0.9 : Math.random() * 0.3; // 模擬高頻突波
+            fallbackSnr[i] = spike > 0 ? 0.95 : Math.random() * 0.2; // 模擬 SNR 突波
         }
         
-        state.waveformData = fallbackWave;
+        state.mediaPool[mediaId].waveformData = fallbackWave;
+        state.mediaPool[mediaId].freqData = fallbackFreq;
+        state.mediaPool[mediaId].snrData = fallbackSnr;
         timelineOverlay.classList.add('hidden');
         console.log("✅ 極速切片波形產生完畢");
         drawTimeline();
@@ -400,17 +463,21 @@
     }
 
     // --- 標準音訊解析流程 ---
-    async function extractAudioAndWaveform(file) {
+    async function extractAudioAndWaveform(mediaId, file) {
       console.log(`[音訊任務啟動] 檔案: ${file.name}, 大小: ${(file.size / (1024 * 1024)).toFixed(2)} MB`);
-      if (file.type.includes('quicktime') || file.size > 40 * 1024 * 1024) {
-         console.warn("偵測到 iOS 原生大檔案或 MOV 格式，切換至極速切片引擎防卡死...");
-         return generateWaveformFromVideoDirect(file);
+      
+      // 🚨 修正：移除武斷的 MOV 格式與 40MB 攔截，將檔案限制放寬至 200MB，讓大部分影片都能真實解碼！
+      if (file.size > 200 * 1024 * 1024) {
+         console.warn("偵測到極大檔案 (>200MB)，為防止記憶體崩潰，切換至極速切片引擎...");
+         return generateWaveformFromVideoDirect(mediaId, file);
       }
       try {
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         const arrayBuffer = await file.arrayBuffer();
         const decodePromise = audioCtx.decodeAudioData(arrayBuffer);
-        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("解碼超時")), 2500));
+        
+        // 🚨 修正：將原本 2.5 秒的超時大幅放寬到 60 秒，確保任何手機與大影片都有足夠時間解碼真實音軌
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("解碼超時 (60秒)")), 60000));
         
         const audioBuffer = await Promise.race([decodePromise, timeoutPromise]);
         
@@ -418,24 +485,59 @@
         const numPoints = 1400;
         const step = Math.ceil(channelData.length / numPoints);
         const wave = new Float32Array(numPoints);
+        const freq = new Float32Array(numPoints); // 儲存過零率 (ZCR) 來代表高頻能量
+        const snr = new Float32Array(numPoints);  // 儲存訊噪比 (Signal-to-Noise Ratio)
 
         for (let i = 0; i < numPoints; i++) {
           let sumSquares = 0;
           let count = 0;
+          let crossings = 0;
+          let prevSign = 0;
+          
           for (let j = 0; j < step && (i * step + j) < channelData.length; j++) {
-            sumSquares += channelData[i * step + j] ** 2;
+            const val = channelData[i * step + j];
+            sumSquares += val ** 2;
+            
+            const sign = Math.sign(val);
+            if (j > 0 && sign !== 0 && sign !== prevSign) {
+                crossings++;
+            }
+            if (sign !== 0) prevSign = sign;
+            
             count++;
           }
           wave[i] = Math.sqrt(sumSquares / count) * 3.0; 
           if(wave[i] > 1.0) wave[i] = 1.0;
+          
+          // 計算 Zero-Crossing Rate (ZCR)，拍手聲的高頻會導致過零率極高
+          // 一般語音 ZCR 低，噪音/拍手 ZCR 高。乘上係數放大特徵
+          freq[i] = Math.min(1.0, (crossings / count) * 4.0); 
         }
 
-        state.waveformData = wave;
+        // 第二次遍歷：計算訊噪比 (SNR) 以視覺化背景突波
+        for (let i = 0; i < numPoints; i++) {
+          const bgRange = Math.floor((0.5 / audioBuffer.duration) * numPoints) || 10;
+          let bgSum = 0, bgCount = 0;
+          for (let k = i - bgRange; k < i - 1; k++) {
+            if (k >= 0) {
+              bgSum += wave[k];
+              bgCount++;
+            }
+          }
+          const bgAvg = bgCount > 0 ? (bgSum / bgCount) : 0.001;
+          const rawSnr = wave[i] / (bgAvg + 0.001);
+          // 歸一化 SNR：當前音量是背景音量的 1 倍(1.0)為 0，大於 5 倍(5.0)為 1.0 (滿格)
+          snr[i] = Math.min(1.0, Math.max(0, (rawSnr - 1) / 4.0));
+        }
+
+        state.mediaPool[mediaId].waveformData = wave;
+        state.mediaPool[mediaId].freqData = freq;
+        state.mediaPool[mediaId].snrData = snr;
         timelineOverlay.classList.add('hidden');
         drawTimeline();
       } catch (err) {
         console.error("標準音訊解析失敗，轉入兜底引擎:", err.message);
-        generateWaveformFromVideoDirect(file);
+        generateWaveformFromVideoDirect(mediaId, file);
       }
     }
 
@@ -460,6 +562,15 @@
 
     // --- 繪製時間軸 ---
     function drawTimeline() {
+      // 確保數值安全，防止 Canvas 渲染崩潰 (防禦性編程)
+      if (isNaN(state.scrollOffsetSec)) state.scrollOffsetSec = 0;
+      if (isNaN(state.zoomFactor) || state.zoomFactor <= 0) state.zoomFactor = 1.0;
+      
+      // 更新畫面上方的時間碼顯示
+      if (timecodeDisplay) {
+        timecodeDisplay.textContent = `${formatTime(state.currentTime)} / ${formatTime(getTimelineDuration())}`;
+      }
+
       const rect = timelineCanvas.getBoundingClientRect();
       const w = timelineCanvas.width = rect.width * window.devicePixelRatio;
       const h = timelineCanvas.height = rect.height * window.devicePixelRatio;
@@ -498,9 +609,9 @@
       state.clips.forEach((clip, idx) => {
         const clipSpeed = clip.speed || 1.0;
         const clipDur = (clip.outPoint - clip.inPoint) / clipSpeed;
-        const x1 = timeToX(currentAcc);
-        const x2 = timeToX(currentAcc + clipDur);
-        const clipW = Math.max(2, x2 - x1);
+        const x1 = timeToX(currentAcc) || 0;
+        const x2 = timeToX(currentAcc + clipDur) || 0;
+        const clipW = Math.max(2, Math.abs(x2 - x1)) || 2;
 
         const isSelected = (idx === state.selectedClipIdx);
         
@@ -534,9 +645,9 @@
       state.clips.forEach((clip, idx) => {
         const clipSpeed = clip.speed || 1.0;
         const clipDur = (clip.outPoint - clip.inPoint) / clipSpeed;
-        const x1 = timeToX(audioAcc);
-        const x2 = timeToX(audioAcc + clipDur);
-        const clipW = Math.max(2, x2 - x1);
+        const x1 = timeToX(audioAcc) || 0;
+        const x2 = timeToX(audioAcc + clipDur) || 0;
+        const clipW = Math.max(2, Math.abs(x2 - x1)) || 2;
         const isSelected = (idx === state.selectedClipIdx);
 
         tCtx.fillStyle = isSelected ? "#064e3b" : "#022c22"; 
@@ -548,6 +659,22 @@
         tCtx.fill();
         tCtx.stroke();
 
+        // --- 新增：頻率特徵 (Freq) 區塊底色 ---
+        tCtx.fillStyle = isSelected ? "#083344" : "#082f49"; 
+        tCtx.strokeStyle = isSelected ? "#22d3ee" : "#0ea5e9"; 
+        tCtx.beginPath();
+        tCtx.roundRect(x1, TRACK_CONFIG.freqY + 2, clipW, TRACK_CONFIG.freqH - 4, 4);
+        tCtx.fill();
+        tCtx.stroke();
+
+        // --- 新增：訊噪比特徵 (SNR) 區塊底色 ---
+        tCtx.fillStyle = isSelected ? "#431407" : "#2a0a04"; 
+        tCtx.strokeStyle = isSelected ? "#f97316" : "#ea580c"; 
+        tCtx.beginPath();
+        tCtx.roundRect(x1, TRACK_CONFIG.snrY + 2, clipW, TRACK_CONFIG.snrH - 4, 4);
+        tCtx.fill();
+        tCtx.stroke();
+
         audioAcc += clipDur;
       });
 
@@ -555,27 +682,53 @@
       const gap = 1.5;
       const stepPixels = barWidth + gap;
 
-      if (state.waveformData && state.waveformData.length > 0 && state.videoDuration > 0) {
-        tCtx.fillStyle = "#10b981"; 
-        const midY = TRACK_CONFIG.audioY + TRACK_CONFIG.audioH / 2;
-        
-        for (let x = 0; x < cssW; x += stepPixels) {
-          const t = xToTime(x);
-          const totalDur = getTimelineDuration();
-          if (t >= 0 && t <= totalDur) {
-             const mapped = mapTimelineToSource(t);
-             if (mapped.clipIndex !== -1 && state.videoDuration > 0) {
-                 const idx = Math.floor((mapped.sourceTime / state.videoDuration) * state.waveformData.length);
-                 if (idx >= 0 && idx < state.waveformData.length) {
-                    const amp = state.waveformData[idx] * (TRACK_CONFIG.audioH / 2 - 2);
-                    if (amp > 0.5) {
-                        tCtx.beginPath();
-                        tCtx.roundRect(x, midY - amp, barWidth, amp * 2, 1.5);
-                        tCtx.fill();
-                    }
-                 }
-             }
-          }
+      const midY = TRACK_CONFIG.audioY + TRACK_CONFIG.audioH / 2;
+      const freqMidY = TRACK_CONFIG.freqY + TRACK_CONFIG.freqH; // 頻率圖從底部往上畫
+      const snrMidY = TRACK_CONFIG.snrY + TRACK_CONFIG.snrH; // SNR 圖從底部往上畫
+      
+      for (let x = 0; x < cssW; x += stepPixels) {
+        const t = xToTime(x);
+        const totalDur = getTimelineDuration();
+        if (t >= 0 && t <= totalDur) {
+           const mapped = mapTimelineToSource(t);
+           if (mapped.clipIndex !== -1 && mapped.mediaId) {
+               const media = state.mediaPool[mapped.mediaId];
+               if (media && media.duration > 0 && media.waveformData && media.waveformData.length > 0) {
+                   const idx = Math.floor((mapped.sourceTime / media.duration) * media.waveformData.length);
+                   if (idx >= 0 && idx < media.waveformData.length) {
+                      // 畫音量波形 (綠色，雙向)
+                      const amp = media.waveformData[idx] * (TRACK_CONFIG.audioH / 2 - 2);
+                      if (amp > 0.5) {
+                          tCtx.fillStyle = "#10b981";
+                          tCtx.beginPath();
+                          tCtx.roundRect(x, midY - amp, barWidth, amp * 2, 1.5);
+                          tCtx.fill();
+                      }
+                      
+                      // 畫頻率特徵 (青色，單向向上)
+                      if (media.freqData && media.freqData[idx]) {
+                          const freqAmp = media.freqData[idx] * (TRACK_CONFIG.freqH - 6);
+                          if (freqAmp > 0.5) {
+                              tCtx.fillStyle = "#22d3ee"; // Cyan 青色
+                              tCtx.beginPath();
+                              tCtx.roundRect(x, freqMidY - 2 - freqAmp, barWidth, freqAmp, 1.0);
+                              tCtx.fill();
+                          }
+                      }
+                      
+                      // 畫 SNR 特徵 (橘色，單向向上)
+                      if (media.snrData && media.snrData[idx]) {
+                          const snrAmp = media.snrData[idx] * (TRACK_CONFIG.snrH - 6);
+                          if (snrAmp > 0.5) {
+                              tCtx.fillStyle = "#f97316"; // Orange 橘色
+                              tCtx.beginPath();
+                              tCtx.roundRect(x, snrMidY - 2 - snrAmp, barWidth, snrAmp, 1.0);
+                              tCtx.fill();
+                          }
+                      }
+                   }
+               }
+           }
         }
       }
       
@@ -614,6 +767,33 @@
           }
       }
 
+      // 拍手審閱點標示 (黃色虛線與頂部箭頭)
+      if (state.clapReviewPoints && state.clapReviewPoints.length > 0) {
+        tCtx.strokeStyle = "rgba(234, 179, 8, 0.8)";
+        tCtx.lineWidth = 1.5;
+        tCtx.setLineDash([4, 4]);
+        state.clapReviewPoints.forEach((pt, idx) => {
+            const px = timeToX(pt.timelineSec);
+            if (px >= 0 && px <= cssW) {
+                tCtx.beginPath();
+                tCtx.moveTo(px, TRACK_CONFIG.videoY);
+                tCtx.lineTo(px, TRACK_CONFIG.snrY + TRACK_CONFIG.snrH);
+                tCtx.stroke();
+                
+                // 特別高亮目前正在審閱的點
+                if (idx === state.clapReviewIndex) {
+                    tCtx.fillStyle = "#eab308";
+                    tCtx.beginPath();
+                    tCtx.moveTo(px - 6, TRACK_CONFIG.videoY - 6);
+                    tCtx.lineTo(px + 6, TRACK_CONFIG.videoY - 6);
+                    tCtx.lineTo(px, TRACK_CONFIG.videoY + 2);
+                    tCtx.fill();
+                }
+            }
+        });
+        tCtx.setLineDash([]);
+      }
+
       // 5. 繪製 Playhead (播放游標)
       const playheadX = timeToX(state.currentTime);
       if (playheadX >= 0 && playheadX <= cssW) {
@@ -628,22 +808,46 @@
         tCtx.beginPath();
         tCtx.arc(playheadX, 6, 4, 0, Math.PI * 2);
         tCtx.fill();
+
+        // --- 新增：當拖曳游標時，顯示當前時間點的波形數據 ---
+        if (state.isDraggingScrubber) {
+          const mapped = mapTimelineToSource(state.currentTime);
+          if (mapped.mediaId && state.mediaPool[mapped.mediaId]) {
+            const media = state.mediaPool[mapped.mediaId];
+            if (media.waveformData && media.duration > 0) {
+              const idx = Math.floor((mapped.sourceTime / media.duration) * media.waveformData.length);
+              if (idx >= 0 && idx < media.waveformData.length) {
+                const amp = media.waveformData[idx].toFixed(3);
+                const freq = (media.freqData && media.freqData[idx]) ? media.freqData[idx].toFixed(3) : "0.000";
+                const snrVal = (media.snrData && media.snrData[idx]) ? media.snrData[idx].toFixed(3) : "0.000";
+                
+                // 決定提示框畫在游標左邊還是右邊，避免超出螢幕
+                const boxX = playheadX + 90 > cssW ? playheadX - 98 : playheadX + 8;
+                
+                tCtx.fillStyle = "rgba(0, 0, 0, 0.85)";
+                tCtx.strokeStyle = "#3f3f46";
+                tCtx.lineWidth = 1;
+                tCtx.beginPath();
+                tCtx.roundRect(boxX, TRACK_CONFIG.freqY - 10, 85, 48, 6);
+                tCtx.fill();
+                tCtx.stroke();
+                
+                tCtx.fillStyle = "#10b981";
+                tCtx.font = "bold 9px monospace";
+                tCtx.textAlign = "left";
+                tCtx.fillText(`Amp:  ${amp}`, boxX + 8, TRACK_CONFIG.freqY + 4);
+                
+                tCtx.fillStyle = "#22d3ee";
+                tCtx.fillText(`Freq: ${freq}`, boxX + 8, TRACK_CONFIG.freqY + 18);
+
+                tCtx.fillStyle = "#f97316";
+                tCtx.fillText(`SNR:  ${snrVal}`, boxX + 8, TRACK_CONFIG.freqY + 32);
+              }
+            }
+          }
+        }
       }
 
-      const totalDur = getTimelineDuration();
-      timecodeDisplay.textContent = `${formatTime(state.currentTime)} / ${formatTime(totalDur)}`;
-    }
-
-    // --- 虛擬播放時鐘 ---
-    let lastAnimTime = 0;
-    function playLoop(timestamp) {
-      if (!state.isPlaying) return;
-      if (!lastAnimTime) lastAnimTime = timestamp;
-      
-      const deltaSec = (timestamp - lastAnimTime) / 1000;
-      lastAnimTime = timestamp;
-
-      state.currentTime += deltaSec;
       const totalDur = getTimelineDuration();
       
       if (state.currentTime >= totalDur) {
@@ -655,10 +859,27 @@
         bgAudioPlayer.currentTime = 0;
         btnCenterPlay.classList.remove('hidden');
         btnPlay.innerHTML = `<i class="ph ph-play text-xl mb-1"></i><span class="text-[10px]">播放</span>`;
+      } else if (state.playUntil !== undefined && state.currentTime >= state.playUntil) {
+        // --- 修正預覽播放：到達指定時間時精準暫停 ---
+        state.currentTime = state.playUntil;
+        state.playUntil = undefined;
+        if (state.isPlaying) togglePlay();
       }
 
       const mapped = mapTimelineToSource(state.currentTime);
       
+      if (mapped.mediaId && state.currentMediaId !== mapped.mediaId) {
+          state.currentMediaId = mapped.mediaId;
+          const media = state.mediaPool[mapped.mediaId];
+          if (media) {
+              video.src = media.src;
+              audioPlayer.src = media.src;
+              video.load();
+              audioPlayer.load();
+              state.lastPlayedClipIndex = -1; 
+          }
+      }
+
       if (state.lastPlayedClipIndex !== mapped.clipIndex) {
           audioPlayer.currentTime = mapped.sourceTime;
           state.lastPlayedClipIndex = mapped.clipIndex;
@@ -685,11 +906,22 @@
       video.currentTime = mapped.sourceTime;
       renderPreviewFrame();
       clampScroll();
-      drawTimeline();
 
       if (state.isPlaying) {
         requestAnimationFrame(playLoop);
       }
+    }
+
+    // --- 播放動畫迴圈引擎 ---
+    let lastAnimTime = 0;
+    function playLoop(timestamp) {
+      if (!state.isPlaying) return;
+      if (!lastAnimTime) lastAnimTime = timestamp;
+      const delta = (timestamp - lastAnimTime) / 1000;
+      lastAnimTime = timestamp;
+      
+      state.currentTime += delta;
+      drawTimeline();
     }
 
     // --- 互動事件綁定 ---
@@ -734,16 +966,20 @@
     });
     document.getElementById('btnConfirmNew').addEventListener('click', () => {
       document.getElementById('newProjectModal').classList.add('hidden');
-      if (state.videoSrc) URL.revokeObjectURL(state.videoSrc);
+      if (state.mediaPool) {
+        Object.values(state.mediaPool).forEach(m => URL.revokeObjectURL(m.src));
+      }
       
       video.src = "";
       audioPlayer.src = "";
       bgAudioPlayer.src = "";
       videoFileInput.value = "";
+      appendVideoFileInput.value = "";
       bgAudioFileInput.value = "";
-      state.videoFile = null;
+      
+      state.mediaPool = {};
+      state.currentMediaId = null;
       state.clips = [];
-      state.waveformData = [];
       
       state.bgAudioSrc = null;
       state.bgAudioDuration = 0;
@@ -760,28 +996,20 @@
     videoFileInput.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      state.videoFile = file; // 儲存原始檔案引用以供後續匯出命名使用
-      const url = URL.createObjectURL(file);
-      state.videoSrc = url;
-      
-      video.src = url;
-      audioPlayer.src = url;
-      video.load();
-      audioPlayer.load();
-
       emptyPlaceholder.classList.add('hidden');
       btnCenterPlay.classList.remove('hidden');
-
-      showToast("載入影片中...");
-      extractAudioAndWaveform(file);
+      processNewVideo(file, false);
     });
-
-    video.addEventListener('loadedmetadata', () => {
-      state.videoDuration = video.duration;
-      if (state.clips.length === 0) {
-        state.clips = [{ inPoint: 0, outPoint: video.duration, speed: 1.0, name: "Clip 1" }];
-      }
-      drawTimeline();
+    
+    document.getElementById('btnAddVideo').addEventListener('click', () => {
+      appendVideoFileInput.click();
+    });
+    
+    appendVideoFileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      processNewVideo(file, true);
+      showToast("影片已附加至時間軸");
     });
 
     video.addEventListener('loadeddata', renderPreviewFrame);
@@ -849,7 +1077,7 @@
         return;
       }
 
-      if (pos.y > TRACK_CONFIG.videoY && pos.y < TRACK_CONFIG.audioY + TRACK_CONFIG.audioH) {
+      if (pos.y > TRACK_CONFIG.videoY && pos.y < TRACK_CONFIG.snrY + TRACK_CONFIG.snrH) {
         const clickedTime = xToTime(pos.x);
         let acc = 0;
         let foundIdx = -1;
@@ -961,6 +1189,7 @@
           
           clip.outPoint = clip.inPoint + splitOffsetSource;
           const newClip = {
+            mediaId: clip.mediaId,
             inPoint: clip.outPoint,
             outPoint: origOut,
             speed: clipSpeed,
@@ -976,69 +1205,175 @@
       }
     });
 
-    // 拍手自動分割
-    document.getElementById('btnClapSplit').addEventListener('click', () => {
-      if (!state.waveformData || state.waveformData.length === 0 || state.videoDuration <= 0) {
-          showToast("無有效音訊數據可供分析");
-          return;
-      }
-
-      showToast("分析拍手/突波特徵中...");
-      console.log("啟動拍手偵測演算法...");
-      
-      const clapSourceTimes = [];
-      const threshold = 0.85; 
-      const minInterval = 1.0; 
-      let lastClap = -999;
-
-      for (let i = 0; i < state.waveformData.length; i++) {
-          if (state.waveformData[i] > threshold) {
-              const sourceTime = (i / state.waveformData.length) * state.videoDuration;
-              if (sourceTime - lastClap > minInterval) {
-                  clapSourceTimes.push(sourceTime);
-                  lastClap = sourceTime;
-              }
-          }
-      }
-
-      if (clapSourceTimes.length === 0) {
-          showToast("未偵測到明顯的拍手或突波聲");
-          console.log("未找到超過閥值的音訊突波。");
-          return;
-      }
-
-      saveHistory();
-      let splitCount = 0;
-
-      clapSourceTimes.forEach(cTime => {
-          for (let i = 0; i < state.clips.length; i++) {
-              const clip = state.clips[i];
-              if (cTime > clip.inPoint + 0.1 && cTime < clip.outPoint - 0.1) {
-                  const origOut = clip.outPoint;
-                  clip.outPoint = cTime;
-                  
-                  const newClip = {
-                      inPoint: cTime,
-                      outPoint: origOut,
-                      speed: clip.speed || 1.0,
-                      name: `Clip ${state.clips.length + 1}`
-                  };
-                  state.clips.splice(i + 1, 0, newClip);
-                  splitCount++;
-                  break; 
-              }
-          }
-      });
-
-      if (splitCount > 0) {
-          showToast(`成功偵測拍手！已自動分割出 ${splitCount + 1} 個片段`);
-          console.log(`自動分割完成，共切割了 ${splitCount} 刀`);
-          drawTimeline();
+    document.getElementById('btnMerge').addEventListener('click', () => {
+      if (state.selectedClipIdx >= 0 && state.selectedClipIdx < state.clips.length - 1) {
+        const clip1 = state.clips[state.selectedClipIdx];
+        const clip2 = state.clips[state.selectedClipIdx + 1];
+        if (clip1.mediaId === clip2.mediaId) {
+          saveHistory();
+          clip1.outPoint = Math.max(clip1.outPoint, clip2.outPoint);
+          state.clips.splice(state.selectedClipIdx + 1, 1);
+          updateSelectedClipUI();
+          showToast("相鄰片段已合併");
+        } else {
+          showToast("只能合併來源相同的相鄰片段");
+        }
       } else {
-          showToast("拍手聲均不在可用的片段範圍內");
-          state.undoStack.pop(); 
-          updateHistoryButtons();
+        showToast("請選取要合併的前一個片段 (需有下一個片段)");
       }
+    });
+
+    // 拍手自動分割 (逐點審閱模式)
+    document.getElementById('btnClapSplit').addEventListener('click', () => {
+      if (state.clips.length === 0) return;
+
+      showToast("分析時間軸拍手/突波特徵中...");
+      console.log("啟動進階拍手偵測演算法 (瞬態突波分析)...");
+      
+      const reviewPoints = [];
+      const minInterval = 0.4; // 兩個拍手點至少間隔 0.4 秒 (避免尾音重複抓取)
+      let lastTimelinePeak = -999;
+      
+      let acc = 0;
+      // 掃描時間軸上的所有片段
+      for (let i = 0; i < state.clips.length; i++) {
+          const clip = state.clips[i];
+          const clipSpeed = clip.speed || 1.0;
+          const dur = (clip.outPoint - clip.inPoint) / clipSpeed;
+          const media = state.mediaPool[clip.mediaId];
+          
+          if (media && media.waveformData && media.duration > 0) {
+              const startIdx = Math.floor((clip.inPoint / media.duration) * media.waveformData.length);
+              const endIdx = Math.floor((clip.outPoint / media.duration) * media.waveformData.length);
+              
+              for (let j = startIdx; j < endIdx; j++) {
+                  const currentSnr = (media.snrData && media.snrData[j]) ? media.snrData[j] : 0;
+                  const currentFreq = (media.freqData && media.freqData[j]) ? media.freqData[j] : 0;
+                  const currentAmp = (media.waveformData && media.waveformData[j]) ? media.waveformData[j] : 0;
+                  
+                  // ========================================================
+                  // 🚀 物理特性修正：拍手是「瞬間突波(Spike)」，不可能持續 0.1 秒！
+                  // 我們改為偵測瞬間的尖刺：只要 SNR 與 高頻 瞬間飆高就抓取。
+                  // ========================================================
+                  const isSpike = currentSnr > 0.1 && currentFreq > 0.1 && currentAmp > 0.03;
+
+                  if (isSpike) {
+                      const sourceT = (j / media.waveformData.length) * media.duration;
+                      const timelineT = acc + (sourceT - clip.inPoint) / clipSpeed;
+                      
+                      // 局部極值鎖定與冷卻機制 (Cooldown)，避免一個拍手抓好幾次
+                      if (timelineT - lastTimelinePeak > minInterval) {
+                          // 將標記點微幅回推 0.05 秒到突波的最起點，切割才會剛好在無聲處
+                          const peakStart = Math.max(acc, timelineT - 0.05);
+                          reviewPoints.push({ timelineSec: peakStart });
+                          lastTimelinePeak = timelineT;
+                      }
+                  }
+              }
+          }
+          acc += dur;
+      }
+
+      if (reviewPoints.length === 0) {
+          showToast("未偵測到明顯的拍手或突波聲");
+          console.log("分析完畢：沒有符合『瞬態孤立突波』特徵的聲音。");
+          return;
+      }
+
+      state.clapReviewPoints = reviewPoints;
+      state.clapReviewIndex = 0;
+      showClapReviewUI();
+    });
+
+    function showClapReviewUI() {
+        document.getElementById('clapReviewModal').classList.remove('hidden');
+        
+        const pt = state.clapReviewPoints[state.clapReviewIndex];
+        document.getElementById('clapReviewProgress').textContent = `${state.clapReviewIndex + 1}/${state.clapReviewPoints.length}`;
+        document.getElementById('clapReviewTime').textContent = formatTime(pt.timelineSec);
+        
+        state.currentTime = pt.timelineSec;
+        // 將時間軸置中於該點
+        state.scrollOffsetSec = Math.max(0, pt.timelineSec - getVisibleDuration() / 2);
+        clampScroll();
+        drawTimeline();
+    }
+    
+    function nextClapReview() {
+        state.clapReviewIndex++;
+        if (state.clapReviewIndex < state.clapReviewPoints.length) {
+            showClapReviewUI();
+        } else {
+            endClapReview();
+            showToast("所有拍手點審閱完成！");
+        }
+    }
+    
+    function endClapReview() {
+        document.getElementById('clapReviewModal').classList.add('hidden');
+        state.clapReviewPoints = [];
+        state.playUntil = undefined;
+        if(state.isPlaying) togglePlay();
+        drawTimeline();
+    }
+
+    document.getElementById('btnClapCancel').addEventListener('click', endClapReview);
+    document.getElementById('btnClapSkip').addEventListener('click', nextClapReview);
+    
+    document.getElementById('btnClapPrev').addEventListener('click', () => {
+        if (state.clapReviewIndex > 0) {
+            state.clapReviewIndex--;
+            showClapReviewUI();
+        } else {
+            showToast("已經是第一個拍手點了");
+        }
+    });
+
+    document.getElementById('btnClapPreview').addEventListener('click', () => {
+        const pt = state.clapReviewPoints[state.clapReviewIndex];
+        state.currentTime = Math.max(0, pt.timelineSec - 0.5); // 退後 0.5 秒開始
+        state.playUntil = Math.min(getTimelineDuration(), pt.timelineSec + 0.5); // 播到後 0.5 秒停止
+        if (!state.isPlaying) togglePlay();
+    });
+
+    document.getElementById('btnClapConfirm').addEventListener('click', () => {
+        const pt = state.clapReviewPoints[state.clapReviewIndex];
+        let acc = 0;
+        let splitSuccess = false;
+        
+        for (let i = 0; i < state.clips.length; i++) {
+            const clip = state.clips[i];
+            const clipSpeed = clip.speed || 1.0;
+            const dur = (clip.outPoint - clip.inPoint) / clipSpeed;
+            
+            // 確保不在片段最邊緣進行切割 (防呆)
+            if (pt.timelineSec > acc + 0.1 && pt.timelineSec < acc + dur - 0.1) {
+                saveHistory();
+                const splitOffsetSource = (pt.timelineSec - acc) * clipSpeed;
+                const origOut = clip.outPoint;
+                clip.outPoint = clip.inPoint + splitOffsetSource;
+                
+                const newClip = {
+                    mediaId: clip.mediaId,
+                    inPoint: clip.outPoint,
+                    outPoint: origOut,
+                    speed: clipSpeed,
+                    name: `Clip ${state.clips.length + 1}`
+                };
+                state.clips.splice(i + 1, 0, newClip);
+                splitSuccess = true;
+                break; 
+            }
+            acc += dur;
+        }
+        
+        if (splitSuccess) {
+            showToast("已在此處精準分割");
+            drawTimeline();
+        } else {
+            showToast("無法分割 (點擊位置太靠近片段邊界)");
+        }
+        nextClapReview();
     });
 
     document.getElementById('btnRename').addEventListener('click', () => {
