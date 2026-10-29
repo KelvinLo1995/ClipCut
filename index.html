@@ -10,27 +10,26 @@
     body {
       background-color: #0c0a09;
       color: #fafafa;
-      overscroll-behavior: none; /* 防止 Safari 彈性滑動 */
+      overscroll-behavior: none;
       -webkit-user-select: none;
       user-select: none;
+      height: 100vh;
+      height: 100dvh;
     }
-    /* 隱藏原生捲軸 */
     ::-webkit-scrollbar { display: none; }
     .no-scrollbar {
       -ms-overflow-style: none;
       scrollbar-width: none;
     }
-    
-    /* 底部日誌面板動畫 */
     #logPanel { transition: height 0.3s ease; }
     .log-expanded { height: 40vh !important; }
     .log-collapsed { height: 40px !important; }
   </style>
 </head>
-<body class="h-screen w-screen flex flex-col overflow-hidden">
+<body class="w-full h-[100dvh] flex flex-col overflow-hidden">
 
   <!-- 隱藏的媒體處理引擎 -->
-  <video id="videoPlayer" class="hidden" muted playsinline webkit-playsinline x5-playsinline></video>
+  <video id="videoPlayer" class="hidden" muted playsinline webkit-playsinline x5-playsinline crossorigin="anonymous"></video>
   <audio id="audioPlayer" class="hidden"></audio>
   <audio id="bgAudioPlayer" class="hidden"></audio>
   <input type="file" id="videoFileInput" accept="video/*, audio/*" class="hidden" />
@@ -60,19 +59,16 @@
   <section class="flex-none bg-black relative flex items-center justify-center border-b border-[#292524]" style="height: 35vh;">
     <canvas id="previewCanvas" class="w-full h-full block"></canvas>
     
-    <!-- 時間戳浮水印 -->
     <div class="absolute top-3 left-3 bg-black/60 backdrop-blur-sm text-white px-2 py-1 rounded font-mono text-xs border border-white/10" id="timecodeDisplay">
       00:00.0 / 00:00.0
     </div>
 
-    <!-- 播放鍵蓋板 -->
     <div id="btnCenterPlay" class="absolute inset-0 flex items-center justify-center bg-black/30 hidden">
       <div class="w-16 h-16 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center border border-white/30 active:scale-90 transition">
         <i class="ph-fill ph-play text-3xl text-white ml-1"></i>
       </div>
     </div>
     
-    <!-- 尚未載入提示 -->
     <div id="emptyPlaceholder" class="absolute inset-0 flex flex-col items-center justify-center text-gray-500 cursor-pointer active:scale-95 transition" onclick="document.getElementById('btnNewProject').click()">
       <i class="ph ph-plus-circle text-5xl mb-2 text-yellow-500 opacity-80"></i>
       <p class="text-sm font-medium text-gray-300">點擊此處載入影片</p>
@@ -94,8 +90,11 @@
   <!-- 4. 多軌道時間軸畫布 -->
   <section class="flex-1 bg-[#0c0a09] relative overflow-hidden" id="timelineContainer">
     <canvas id="timelineCanvas" class="w-full h-full block cursor-pointer touch-none"></canvas>
-    <div id="timelineOverlay" class="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-none hidden z-40">
-       <span class="text-white text-sm animate-pulse" id="timelineOverlayText">處理中...</span>
+    <div id="timelineOverlay" class="absolute inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm pointer-events-none hidden z-40">
+       <div class="flex flex-col items-center gap-2">
+         <div class="w-6 h-6 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin"></div>
+         <span class="text-white text-sm font-medium" id="timelineOverlayText">處理中...</span>
+       </div>
     </div>
   </section>
 
@@ -161,7 +160,6 @@
   </div>
 
   <!-- UI 覆蓋層 Modals -->
-  <!-- 新專案 Modal -->
   <div id="newProjectModal" class="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md hidden flex items-center justify-center">
     <div class="bg-[#1c1917] p-6 rounded-2xl w-10/12 max-w-sm border border-[#292524] shadow-2xl">
       <h2 class="text-lg font-bold text-white mb-2">建立新專案</h2>
@@ -173,7 +171,6 @@
     </div>
   </div>
 
-  <!-- 拍手分割逐一確認 Modal -->
   <div id="clapReviewModal" class="fixed bottom-24 left-1/2 -translate-x-1/2 z-[9999] bg-black/90 backdrop-blur-md hidden flex-col items-center justify-center p-4 rounded-2xl border border-[#292524] shadow-2xl w-11/12 max-w-sm">
     <div class="flex items-center justify-between w-full mb-3">
       <h2 class="text-sm font-bold text-white">審閱拍手分割 <span id="clapReviewProgress" class="text-yellow-500">1/3</span></h2>
@@ -188,13 +185,12 @@
     <button id="btnClapCancel" class="w-full mt-3 py-2 rounded-lg bg-red-900/40 text-red-400 border border-red-700/50 text-xs">結束審閱</button>
   </div>
 
-  <!-- Toast 提示框 -->
   <div id="toast" class="fixed top-16 left-1/2 -translate-x-1/2 bg-gray-800/90 backdrop-blur text-white px-4 py-2 rounded-full text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-300 z-50">
     Notification
   </div>
 
   <script>
-    // --- 終端機日誌攔截系統 (Console Proxy) ---
+    // --- 終端機日誌系統 ---
     const logContent = document.getElementById('logContent');
     const logCountSpan = document.getElementById('logCount');
     let logCount = 0;
@@ -202,13 +198,10 @@
     function appendLog(message, type = 'info') {
       const div = document.createElement('div');
       const time = new Date().toLocaleTimeString('zh-TW', { hour12: true });
-      
-      let icon = 'ℹ️';
-      let color = 'text-gray-300';
+      let icon = 'ℹ️'; let color = 'text-gray-300';
       if (type === 'error') { icon = '❌'; color = 'text-red-400 bg-red-900/20 px-1 rounded'; }
       if (type === 'warn') { icon = '⚠️'; color = 'text-yellow-400'; }
       if (type === 'success') { icon = '✅'; color = 'text-emerald-400'; }
-
       div.innerHTML = `<span class="text-gray-500">[${time}]</span> ${icon} <span class="${color}">${message}</span>`;
       logContent.appendChild(div);
       logCount++;
@@ -216,10 +209,7 @@
       logContent.scrollTop = logContent.scrollHeight;
     }
 
-    const origLog = console.log;
-    const origWarn = console.warn;
-    const origError = console.error;
-
+    const origLog = console.log; const origWarn = console.warn; const origError = console.error;
     console.log = function(...args) { origLog(...args); appendLog(args.join(' '), 'info'); };
     console.warn = function(...args) { origWarn(...args); appendLog(args.join(' '), 'warn'); };
     console.error = function(...args) { origError(...args); appendLog(args.join(' '), 'error'); };
@@ -230,11 +220,9 @@
     document.getElementById('btnToggleLog').addEventListener('click', () => {
       const panel = document.getElementById('logPanel');
       if (panel.classList.contains('log-collapsed')) {
-        panel.classList.remove('log-collapsed');
-        panel.classList.add('log-expanded');
+        panel.classList.remove('log-collapsed'); panel.classList.add('log-expanded');
       } else {
-        panel.classList.add('log-collapsed');
-        panel.classList.remove('log-expanded');
+        panel.classList.add('log-collapsed'); panel.classList.remove('log-expanded');
       }
     });
     document.getElementById('btnClearLog').addEventListener('click', () => { logContent.innerHTML = ''; logCount = 0; logCountSpan.textContent = '(0 logs)'; });
@@ -244,43 +232,20 @@
 
     console.log("應用程式核心啟動完成，已綁定底部控制台。");
 
-    // --- 核心狀態管理 (State) ---
+    // --- 核心狀態管理 ---
     const state = {
-      mediaPool: {}, 
-      currentMediaId: null,
-      
-      currentTime: 0, 
-      isPlaying: false,
-      
-      clips: [], 
-      subtitles: [],
-      clipboard: null,
-      
-      bgAudioSrc: null,
-      bgAudioDuration: 0,
-      bgAudioWaveformData: [],
-      bgAudioStartTime: 0,
-      
-      undoStack: [],
-      redoStack: [],
-      
-      selectedClipIdx: -1,
-      zoomFactor: 1.0,
-      scrollOffsetSec: 0.0,
-      
-      isDraggingScrubber: false,
-      isDraggingClip: false,
-      draggedClipIdx: -1,
-      dragClipInitialX: 0,
-      isPanning: false,
-      lastPanX: 0,
-      lastPlayedClipIndex: -1,
-      clapReviewPoints: [],
-      clapReviewIndex: 0,
-      playUntil: undefined
+      mediaPool: {}, currentMediaId: null,
+      currentTime: 0, isPlaying: false,
+      clips: [], subtitles: [], clipboard: null,
+      bgAudioSrc: null, bgAudioDuration: 0, bgAudioWaveformData: [], bgAudioStartTime: 0,
+      undoStack: [], redoStack: [],
+      selectedClipIdx: -1, zoomFactor: 1.0, scrollOffsetSec: 0.0,
+      isDraggingScrubber: false, isDraggingClip: false, draggedClipIdx: -1, dragClipInitialX: 0,
+      isPanning: false, lastPanX: 0, lastPlayedClipIndex: -1,
+      clapReviewPoints: [], clapReviewIndex: 0, playUntil: undefined
     };
 
-    // --- DOM 元素綁定 ---
+    // --- DOM 綁定 ---
     const video = document.getElementById('videoPlayer');
     const audioPlayer = document.getElementById('audioPlayer');
     const bgAudioPlayer = document.getElementById('bgAudioPlayer');
@@ -300,12 +265,9 @@
 
     const TRACK_CONFIG = { rulerH: 24, videoY: 26, videoH: 40, audioY: 68, audioH: 30, freqY: 100, freqH: 24, snrY: 126, snrH: 24, bgAudioY: 152, bgAudioH: 30 };
 
-    // --- 工具函數 ---
     function formatTime(sec) {
       if(isNaN(sec) || !isFinite(sec)) return "00:00.0";
-      const m = Math.floor(sec / 60);
-      const s = Math.floor(sec % 60);
-      const ms = Math.floor((sec % 1) * 10);
+      const m = Math.floor(sec / 60); const s = Math.floor(sec % 60); const ms = Math.floor((sec % 1) * 10);
       return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms}`;
     }
 
@@ -331,10 +293,8 @@
       if (state.undoStack.length > 0) {
         state.redoStack.push(JSON.stringify({ clips: JSON.parse(JSON.stringify(state.clips)), subtitles: state.subtitles }));
         const prevState = JSON.parse(state.undoStack.pop());
-        state.clips = prevState.clips;
-        state.subtitles = prevState.subtitles;
-        updateHistoryButtons();
-        drawTimeline();
+        state.clips = prevState.clips; state.subtitles = prevState.subtitles;
+        updateHistoryButtons(); drawTimeline();
       }
     });
 
@@ -342,54 +302,27 @@
       if (state.redoStack.length > 0) {
         state.undoStack.push(JSON.stringify({ clips: JSON.parse(JSON.stringify(state.clips)), subtitles: state.subtitles }));
         const nextState = JSON.parse(state.redoStack.pop());
-        state.clips = nextState.clips;
-        state.subtitles = nextState.subtitles;
-        updateHistoryButtons();
-        drawTimeline();
+        state.clips = nextState.clips; state.subtitles = nextState.subtitles;
+        updateHistoryButtons(); drawTimeline();
       }
     });
 
     function getTimelineDuration() {
       return state.clips.reduce((acc, c) => acc + ((c.outPoint - c.inPoint) / (c.speed || 1.0)), 0);
     }
+    function getVisibleDuration() { return Math.max(1.0, getTimelineDuration() / state.zoomFactor); }
+    function clampScroll() { state.scrollOffsetSec = Math.max(0, Math.min(state.scrollOffsetSec, Math.max(0, getTimelineDuration() - getVisibleDuration()))); }
+    function timeToX(t) { return ((t - state.scrollOffsetSec) / getVisibleDuration()) * timelineCanvas.getBoundingClientRect().width; }
+    function xToTime(x) { return state.scrollOffsetSec + (x / timelineCanvas.getBoundingClientRect().width) * getVisibleDuration(); }
 
-    function getVisibleDuration() {
-      const d = getTimelineDuration();
-      if (d <= 0) return 1.0;
-      return Math.max(1.0, d / state.zoomFactor);
-    }
-
-    function clampScroll() {
-      const maxScroll = Math.max(0, getTimelineDuration() - getVisibleDuration());
-      state.scrollOffsetSec = Math.max(0, Math.min(state.scrollOffsetSec, maxScroll));
-    }
-
-    function timeToX(t) {
-      const rect = timelineCanvas.getBoundingClientRect();
-      return ((t - state.scrollOffsetSec) / getVisibleDuration()) * rect.width;
-    }
-
-    function xToTime(x) {
-      const rect = timelineCanvas.getBoundingClientRect();
-      return state.scrollOffsetSec + (x / rect.width) * getVisibleDuration();
-    }
-
-    // --- NLE 核心：映射 Timeline 時間到 Source 影片時間 ---
     function mapTimelineToSource(timelineSec) {
       let currentAcc = 0;
       for (let i = 0; i < state.clips.length; i++) {
         const clip = state.clips[i];
         const clipSpeed = clip.speed || 1.0;
         const clipDurTimeline = (clip.outPoint - clip.inPoint) / clipSpeed;
-        
         if (timelineSec >= currentAcc && timelineSec <= currentAcc + clipDurTimeline) {
-          const offsetInClip = (timelineSec - currentAcc) * clipSpeed;
-          return {
-            clipIndex: i,
-            sourceTime: clip.inPoint + offsetInClip,
-            speed: clipSpeed,
-            mediaId: clip.mediaId
-          };
+          return { clipIndex: i, sourceTime: clip.inPoint + (timelineSec - currentAcc) * clipSpeed, speed: clipSpeed, mediaId: clip.mediaId };
         }
         currentAcc += clipDurTimeline;
       }
@@ -404,326 +337,299 @@
       const tempVid = document.createElement('video');
       tempVid.src = url;
       await new Promise(resolve => {
-          tempVid.onloadedmetadata = () => {
-              state.mediaPool[mediaId].duration = tempVid.duration;
-              resolve();
-          };
+          tempVid.onloadedmetadata = () => { state.mediaPool[mediaId].duration = tempVid.duration; resolve(); };
           tempVid.onerror = resolve; 
       });
 
       if (!isAppend) {
           state.clips = [{ mediaId, inPoint: 0, outPoint: state.mediaPool[mediaId].duration, speed: 1.0, name: "Clip 1" }];
           state.currentMediaId = mediaId;
-          video.src = url;
-          audioPlayer.src = url;
-          video.load();
-          audioPlayer.load();
+          video.src = url; audioPlayer.src = url;
+          video.load(); audioPlayer.load();
       } else {
           saveHistory();
           state.clips.push({ mediaId, inPoint: 0, outPoint: state.mediaPool[mediaId].duration, speed: 1.0, name: `Clip ${state.clips.length + 1}` });
       }
-
       drawTimeline();
-      showToast("正在分析音訊波形...");
+      timelineOverlayText.textContent = "正在提取真實音訊特徵 (零假數據)...";
+      timelineOverlay.classList.remove('hidden');
       extractAudioAndWaveform(mediaId, file);
     }
 
-    // --- 音訊極速切片提取器 ---
-    async function generateWaveformFromVideoDirect(mediaId, file) {
-      console.log("啟動極速切片探測模式 (iOS 相容安全模式)...");
-      try {
-        const chunkSize = Math.min(16 * 1024 * 1024, file.size);
-        const chunk = file.slice(0, chunkSize);
-        const arrayBuffer = await chunk.arrayBuffer();
-        
-        const numPoints = 1400;
-        const fallbackWave = new Float32Array(numPoints);
-        const fallbackFreq = new Float32Array(numPoints);
-        const fallbackSnr = new Float32Array(numPoints);
-        const duration = state.mediaPool[mediaId].duration > 0 ? state.mediaPool[mediaId].duration : 10;
-        
-        for (let i = 0; i < numPoints; i++) {
-            const t = (i / numPoints) * duration;
-            const spike = Math.random() > 0.98 ? 1.0 : 0; 
-            const envelope = Math.abs(Math.sin(t * 3.14)) * 0.5 + Math.random() * 0.4;
-            fallbackWave[i] = spike > 0 ? spike : envelope * 0.8; 
-            fallbackFreq[i] = spike > 0 ? 0.9 : Math.random() * 0.3; // 模擬高頻突波
-            fallbackSnr[i] = spike > 0 ? 0.95 : Math.random() * 0.2; // 模擬 SNR 突波
-        }
-        
-        state.mediaPool[mediaId].waveformData = fallbackWave;
-        state.mediaPool[mediaId].freqData = fallbackFreq;
-        state.mediaPool[mediaId].snrData = fallbackSnr;
-        timelineOverlay.classList.add('hidden');
-        console.log("✅ 極速切片波形產生完畢");
-        drawTimeline();
-      } catch (err) {
-        console.error("極速切片失敗:", err);
-      }
-    }
-
-    // --- 標準音訊解析流程 ---
+    // ==============================================================
+    // 🚀 終極真音訊提取器 (Web Audio + iOS 實時擷取兜底，100% 砍掉假數據)
+    // ==============================================================
     async function extractAudioAndWaveform(mediaId, file) {
       console.log(`[音訊任務啟動] 檔案: ${file.name}, 大小: ${(file.size / (1024 * 1024)).toFixed(2)} MB`);
       
-      // 🚨 修正：移除武斷的 MOV 格式與 40MB 攔截，將檔案限制放寬至 200MB，讓大部分影片都能真實解碼！
-      if (file.size > 200 * 1024 * 1024) {
-         console.warn("偵測到極大檔案 (>200MB)，為防止記憶體崩潰，切換至極速切片引擎...");
-         return generateWaveformFromVideoDirect(mediaId, file);
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
       }
+
+      let audioBuffer = null;
+      const rawBuffer = await file.arrayBuffer();
+
+      // 步驟 1: 電腦版與安卓常規解碼 (完美支援 MP4/WebM，部分支援 MOV)
       try {
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const arrayBuffer = await file.arrayBuffer();
-        const decodePromise = audioCtx.decodeAudioData(arrayBuffer);
+        console.log("嘗試使用原生 decodeAudioData 進行解碼...");
+        audioBuffer = await new Promise((resolve, reject) => {
+          audioCtx.decodeAudioData(rawBuffer, resolve, reject);
+        });
+        console.log("✅ 原生音軌解碼成功！");
+      } catch (err1) {
+        console.warn("⚠️ 原生解碼受阻 (常見於 iOS 的 MOV 格式)！");
+        console.warn("錯誤細節:", err1);
         
-        // 🚨 修正：將原本 2.5 秒的超時大幅放寬到 60 秒，確保任何手機與大影片都有足夠時間解碼真實音軌
-        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("解碼超時 (60秒)")), 60000));
-        
-        const audioBuffer = await Promise.race([decodePromise, timeoutPromise]);
-        
-        const channelData = audioBuffer.getChannelData(0);
-        const numPoints = 1400;
-        const step = Math.ceil(channelData.length / numPoints);
-        const wave = new Float32Array(numPoints);
-        const freq = new Float32Array(numPoints); // 儲存過零率 (ZCR) 來代表高頻能量
-        const snr = new Float32Array(numPoints);  // 儲存訊噪比 (Signal-to-Noise Ratio)
-
-        for (let i = 0; i < numPoints; i++) {
-          let sumSquares = 0;
-          let count = 0;
-          let crossings = 0;
-          let prevSign = 0;
-          
-          for (let j = 0; j < step && (i * step + j) < channelData.length; j++) {
-            const val = channelData[i * step + j];
-            sumSquares += val ** 2;
-            
-            const sign = Math.sign(val);
-            if (j > 0 && sign !== 0 && sign !== prevSign) {
-                crossings++;
-            }
-            if (sign !== 0) prevSign = sign;
-            
-            count++;
-          }
-          wave[i] = Math.sqrt(sumSquares / count) * 3.0; 
-          if(wave[i] > 1.0) wave[i] = 1.0;
-          
-          // 計算 Zero-Crossing Rate (ZCR)，拍手聲的高頻會導致過零率極高
-          // 一般語音 ZCR 低，噪音/拍手 ZCR 高。乘上係數放大特徵
-          freq[i] = Math.min(1.0, (crossings / count) * 4.0); 
+        // 步驟 2: iOS 專用救援模式 - 實時擷取真音軌 (安全、可靠、絕無假數據)
+        console.log("🚀 啟動 iOS 專用實時真音訊擷取模式...");
+        try {
+          audioBuffer = await extractAudioViaMediaElement(state.mediaPool[mediaId].src, state.mediaPool[mediaId].duration);
+          console.log("✅ iOS 實時真音訊擷取成功！");
+        } catch (err2) {
+          console.error("❌ 所有音軌解碼皆受阻:", err2);
+          showToast("無法解碼此檔案音軌，這可能是未支援的格式");
+          timelineOverlay.classList.add('hidden');
+          return; // 直接中斷，絕對不塞假數據！
         }
-
-        // 第二次遍歷：計算訊噪比 (SNR) 以視覺化背景突波
-        for (let i = 0; i < numPoints; i++) {
-          const bgRange = Math.floor((0.5 / audioBuffer.duration) * numPoints) || 10;
-          let bgSum = 0, bgCount = 0;
-          for (let k = i - bgRange; k < i - 1; k++) {
-            if (k >= 0) {
-              bgSum += wave[k];
-              bgCount++;
-            }
-          }
-          const bgAvg = bgCount > 0 ? (bgSum / bgCount) : 0.001;
-          const rawSnr = wave[i] / (bgAvg + 0.001);
-          // 歸一化 SNR：當前音量是背景音量的 1 倍(1.0)為 0，大於 5 倍(5.0)為 1.0 (滿格)
-          snr[i] = Math.min(1.0, Math.max(0, (rawSnr - 1) / 4.0));
-        }
-
-        state.mediaPool[mediaId].waveformData = wave;
-        state.mediaPool[mediaId].freqData = freq;
-        state.mediaPool[mediaId].snrData = snr;
-        timelineOverlay.classList.add('hidden');
-        drawTimeline();
-      } catch (err) {
-        console.error("標準音訊解析失敗，轉入兜底引擎:", err.message);
-        generateWaveformFromVideoDirect(mediaId, file);
       }
+
+      // 步驟 3: 將真實音訊處理為波形、過零率高頻 (Freq) 與訊噪比 (SNR)
+      const channelData = audioBuffer.getChannelData(0);
+      const numPoints = 1400;
+      const step = Math.ceil(channelData.length / numPoints);
+      const wave = new Float32Array(numPoints);
+      const freq = new Float32Array(numPoints);
+      const snr = new Float32Array(numPoints);
+
+      for (let i = 0; i < numPoints; i++) {
+        let sumSquares = 0; let count = 0; let crossings = 0; let prevSign = 0;
+        for (let j = 0; j < step && (i * step + j) < channelData.length; j++) {
+          const val = channelData[i * step + j];
+          sumSquares += val ** 2;
+          const sign = Math.sign(val);
+          if (j > 0 && sign !== 0 && sign !== prevSign) crossings++;
+          if (sign !== 0) prevSign = sign;
+          count++;
+        }
+        wave[i] = Math.sqrt(sumSquares / count) * 3.0; 
+        if(wave[i] > 1.0) wave[i] = 1.0;
+        freq[i] = Math.min(1.0, (crossings / count) * 4.0); 
+      }
+
+      for (let i = 0; i < numPoints; i++) {
+        const bgRange = Math.floor((0.5 / audioBuffer.duration) * numPoints) || 10;
+        let bgSum = 0, bgCount = 0;
+        for (let k = i - bgRange; k < i - 1; k++) {
+          if (k >= 0) { bgSum += wave[k]; bgCount++; }
+        }
+        const bgAvg = bgCount > 0 ? (bgSum / bgCount) : 0.001;
+        const rawSnr = wave[i] / (bgAvg + 0.001);
+        snr[i] = Math.min(1.0, Math.max(0, (rawSnr - 1) / 4.0));
+      }
+
+      state.mediaPool[mediaId].waveformData = wave;
+      state.mediaPool[mediaId].freqData = freq;
+      state.mediaPool[mediaId].snrData = snr;
+      timelineOverlay.classList.add('hidden');
+      drawTimeline();
+      showToast("真實音訊波形分析完成！");
     }
 
-    // --- 繪製預覽畫面 ---
+    // 利用 video 元素與 Web Audio API 掛勾，強制擷取真實音訊
+    function extractAudioViaMediaElement(videoSrc, duration) {
+      return new Promise((resolve, reject) => {
+        const probeVideo = document.createElement('video');
+        probeVideo.src = videoSrc;
+        probeVideo.muted = false; // 必須取消靜音才能捕獲音訊
+        probeVideo.crossOrigin = "anonymous";
+        probeVideo.playsInline = true;
+        
+        // 在 iOS 上必須將其附加到 DOM，否則 Web Audio 無法穩定攔截其音訊
+        probeVideo.style.display = 'none';
+        document.body.appendChild(probeVideo);
+
+        const dur = (duration > 0 && isFinite(duration)) ? duration : 10;
+        const sampleRate = 16000; // 降低取樣率以求秒級分析完成
+        const totalSamples = Math.floor(dur * sampleRate);
+        const pcmData = new Float32Array(totalSamples);
+
+        const aCtx = new (window.AudioContext || window.webkitAudioContext)();
+        let sourceNode;
+        try {
+          sourceNode = aCtx.createMediaElementSource(probeVideo);
+        } catch(e) {
+          document.body.removeChild(probeVideo);
+          return reject(e);
+        }
+
+        const scriptNode = aCtx.createScriptProcessor(4096, 1, 1);
+        let writeIdx = 0;
+
+        scriptNode.onaudioprocess = (e) => {
+          const input = e.inputBuffer.getChannelData(0);
+          for (let i = 0; i < input.length; i++) {
+            if (writeIdx < totalSamples) {
+              pcmData[writeIdx++] = input[i];
+            }
+          }
+          if (writeIdx >= totalSamples) finish();
+        };
+
+        function finish() {
+          probeVideo.pause();
+          sourceNode.disconnect();
+          scriptNode.disconnect();
+          if (document.body.contains(probeVideo)) document.body.removeChild(probeVideo);
+          
+          const outBuf = aCtx.createBuffer(1, totalSamples, sampleRate);
+          outBuf.copyToChannel(pcmData, 0);
+          resolve(outBuf);
+        }
+
+        probeVideo.onended = finish;
+        sourceNode.connect(scriptNode);
+        scriptNode.connect(aCtx.destination);
+        
+        // iOS 最多允許 2 倍速安全播放提取
+        probeVideo.playbackRate = 2.0; 
+        probeVideo.play().catch(e => {
+            if (document.body.contains(probeVideo)) document.body.removeChild(probeVideo);
+            reject(e);
+        });
+
+        // 設置超時保護 (給予充分的提取時間)
+        const timeoutMs = (dur / 2.0) * 1000 + 8000;
+        setTimeout(() => {
+          if (writeIdx > 0) {
+            finish();
+          } else {
+            if (document.body.contains(probeVideo)) document.body.removeChild(probeVideo);
+            reject(new Error("Video 真實擷取超時"));
+          }
+        }, Math.max(15000, timeoutMs));
+      });
+    }
+
     function renderPreviewFrame() {
       if (!video.videoWidth) return;
       const parent = previewCanvas.parentElement;
       const cw = previewCanvas.width = parent.clientWidth * window.devicePixelRatio;
       const ch = previewCanvas.height = parent.clientHeight * window.devicePixelRatio;
-      
-      const vw = video.videoWidth;
-      const vh = video.videoHeight;
+      const vw = video.videoWidth; const vh = video.videoHeight;
       const scale = Math.min(cw / vw, ch / vh);
-      const dw = vw * scale;
-      const dh = vh * scale;
-      const dx = (cw - dw) / 2;
-      const dy = (ch - dh) / 2;
-      
+      const dw = vw * scale; const dh = vh * scale;
+      const dx = (cw - dw) / 2; const dy = (ch - dh) / 2;
       previewCtx.clearRect(0, 0, cw, ch);
       previewCtx.drawImage(video, dx, dy, dw, dh);
     }
 
-    // --- 繪製時間軸 ---
     function drawTimeline() {
-      // 確保數值安全，防止 Canvas 渲染崩潰 (防禦性編程)
       if (isNaN(state.scrollOffsetSec)) state.scrollOffsetSec = 0;
       if (isNaN(state.zoomFactor) || state.zoomFactor <= 0) state.zoomFactor = 1.0;
-      
-      // 更新畫面上方的時間碼顯示
-      if (timecodeDisplay) {
-        timecodeDisplay.textContent = `${formatTime(state.currentTime)} / ${formatTime(getTimelineDuration())}`;
-      }
+      if (timecodeDisplay) timecodeDisplay.textContent = `${formatTime(state.currentTime)} / ${formatTime(getTimelineDuration())}`;
 
       const rect = timelineCanvas.getBoundingClientRect();
       const w = timelineCanvas.width = rect.width * window.devicePixelRatio;
       const h = timelineCanvas.height = rect.height * window.devicePixelRatio;
       const dpr = window.devicePixelRatio;
-      
       tCtx.scale(dpr, dpr);
       const cssW = rect.width;
 
       tCtx.fillStyle = "#0c0a09";
       tCtx.fillRect(0, 0, cssW, rect.height);
 
-      // 1. 繪製頂部標尺
-      tCtx.fillStyle = "#171717";
-      tCtx.fillRect(0, 0, cssW, TRACK_CONFIG.rulerH);
-      tCtx.fillStyle = "#525252";
-      tCtx.font = "9px monospace";
-      tCtx.textAlign = "center";
-      
+      tCtx.fillStyle = "#171717"; tCtx.fillRect(0, 0, cssW, TRACK_CONFIG.rulerH);
+      tCtx.fillStyle = "#525252"; tCtx.font = "9px monospace"; tCtx.textAlign = "center";
       const visDur = getVisibleDuration();
       const step = visDur > 60 ? 10 : (visDur > 20 ? 5 : 1);
       const startT = Math.floor(state.scrollOffsetSec / step) * step;
-      
       for (let t = startT; t <= state.scrollOffsetSec + visDur; t += step) {
         const tx = timeToX(t);
         if (tx >= 0 && tx <= cssW) {
-          tCtx.fillRect(tx, 14, 1, 10);
-          tCtx.fillText(formatTime(t), tx, 10);
+          tCtx.fillRect(tx, 14, 1, 10); tCtx.fillText(formatTime(t), tx, 10);
         }
       }
 
-      // 2. 繪製視訊軌道 (Clip)
-      tCtx.fillStyle = "#1c1917";
-      tCtx.fillRect(0, TRACK_CONFIG.videoY, cssW, TRACK_CONFIG.videoH);
-
+      tCtx.fillStyle = "#1c1917"; tCtx.fillRect(0, TRACK_CONFIG.videoY, cssW, TRACK_CONFIG.videoH);
       let currentAcc = 0;
       state.clips.forEach((clip, idx) => {
-        const clipSpeed = clip.speed || 1.0;
-        const clipDur = (clip.outPoint - clip.inPoint) / clipSpeed;
-        const x1 = timeToX(currentAcc) || 0;
-        const x2 = timeToX(currentAcc + clipDur) || 0;
+        const clipSpeed = clip.speed || 1.0; const clipDur = (clip.outPoint - clip.inPoint) / clipSpeed;
+        const x1 = timeToX(currentAcc) || 0; const x2 = timeToX(currentAcc + clipDur) || 0;
         const clipW = Math.max(2, Math.abs(x2 - x1)) || 2;
-
         const isSelected = (idx === state.selectedClipIdx);
         
         tCtx.fillStyle = isSelected ? "#0284c7" : "#0369a1"; 
         tCtx.strokeStyle = isSelected ? "#bae6fd" : "#0c4a6e";
         tCtx.lineWidth = isSelected ? 2 : 1;
-
-        tCtx.beginPath();
-        tCtx.roundRect(x1, TRACK_CONFIG.videoY + 2, clipW, TRACK_CONFIG.videoH - 4, 6);
-        tCtx.fill();
-        tCtx.stroke();
-
+        tCtx.beginPath(); tCtx.roundRect(x1, TRACK_CONFIG.videoY + 2, clipW, TRACK_CONFIG.videoH - 4, 6);
+        tCtx.fill(); tCtx.stroke();
         if (clipW > 35) {
-          tCtx.fillStyle = "#ffffff";
-          tCtx.font = "bold 11px sans-serif";
-          tCtx.textAlign = "left";
-          const label = `${clip.name}${clipSpeed !== 1.0 ? ' (' + clipSpeed + 'x)' : ''}`;
-          tCtx.fillText(label, x1 + 6, TRACK_CONFIG.videoY + 20);
-          tCtx.fillStyle = "#93c5fd";
-          tCtx.font = "9px monospace";
+          tCtx.fillStyle = "#ffffff"; tCtx.font = "bold 11px sans-serif"; tCtx.textAlign = "left";
+          tCtx.fillText(`${clip.name}${clipSpeed !== 1.0 ? ' ('+clipSpeed+'x)' : ''}`, x1 + 6, TRACK_CONFIG.videoY + 20);
+          tCtx.fillStyle = "#93c5fd"; tCtx.font = "9px monospace";
           tCtx.fillText(`${clipDur.toFixed(1)}s`, x1 + 6, TRACK_CONFIG.videoY + 36);
         }
         currentAcc += clipDur;
       }); 
 
-      // 3. 繪製音訊波形軌道
-      tCtx.fillStyle = "#0c0a09";
-      tCtx.fillRect(0, TRACK_CONFIG.audioY, cssW, TRACK_CONFIG.audioH);
-
+      tCtx.fillStyle = "#0c0a09"; tCtx.fillRect(0, TRACK_CONFIG.audioY, cssW, TRACK_CONFIG.audioH);
       let audioAcc = 0;
       state.clips.forEach((clip, idx) => {
-        const clipSpeed = clip.speed || 1.0;
-        const clipDur = (clip.outPoint - clip.inPoint) / clipSpeed;
-        const x1 = timeToX(audioAcc) || 0;
-        const x2 = timeToX(audioAcc + clipDur) || 0;
+        const clipSpeed = clip.speed || 1.0; const clipDur = (clip.outPoint - clip.inPoint) / clipSpeed;
+        const x1 = timeToX(audioAcc) || 0; const x2 = timeToX(audioAcc + clipDur) || 0;
         const clipW = Math.max(2, Math.abs(x2 - x1)) || 2;
         const isSelected = (idx === state.selectedClipIdx);
 
         tCtx.fillStyle = isSelected ? "#064e3b" : "#022c22"; 
         tCtx.strokeStyle = isSelected ? "#34d399" : "#065f46"; 
         tCtx.lineWidth = isSelected ? 2 : 1;
+        tCtx.beginPath(); tCtx.roundRect(x1, TRACK_CONFIG.audioY + 2, clipW, TRACK_CONFIG.audioH - 4, 6);
+        tCtx.fill(); tCtx.stroke();
 
-        tCtx.beginPath();
-        tCtx.roundRect(x1, TRACK_CONFIG.audioY + 2, clipW, TRACK_CONFIG.audioH - 4, 6);
-        tCtx.fill();
-        tCtx.stroke();
-
-        // --- 新增：頻率特徵 (Freq) 區塊底色 ---
         tCtx.fillStyle = isSelected ? "#083344" : "#082f49"; 
         tCtx.strokeStyle = isSelected ? "#22d3ee" : "#0ea5e9"; 
-        tCtx.beginPath();
-        tCtx.roundRect(x1, TRACK_CONFIG.freqY + 2, clipW, TRACK_CONFIG.freqH - 4, 4);
-        tCtx.fill();
-        tCtx.stroke();
+        tCtx.beginPath(); tCtx.roundRect(x1, TRACK_CONFIG.freqY + 2, clipW, TRACK_CONFIG.freqH - 4, 4);
+        tCtx.fill(); tCtx.stroke();
 
-        // --- 新增：訊噪比特徵 (SNR) 區塊底色 ---
         tCtx.fillStyle = isSelected ? "#431407" : "#2a0a04"; 
         tCtx.strokeStyle = isSelected ? "#f97316" : "#ea580c"; 
-        tCtx.beginPath();
-        tCtx.roundRect(x1, TRACK_CONFIG.snrY + 2, clipW, TRACK_CONFIG.snrH - 4, 4);
-        tCtx.fill();
-        tCtx.stroke();
-
+        tCtx.beginPath(); tCtx.roundRect(x1, TRACK_CONFIG.snrY + 2, clipW, TRACK_CONFIG.snrH - 4, 4);
+        tCtx.fill(); tCtx.stroke();
         audioAcc += clipDur;
       });
 
-      const barWidth = 2.5;
-      const gap = 1.5;
-      const stepPixels = barWidth + gap;
-
+      const barWidth = 2.5; const gap = 1.5; const stepPixels = barWidth + gap;
       const midY = TRACK_CONFIG.audioY + TRACK_CONFIG.audioH / 2;
-      const freqMidY = TRACK_CONFIG.freqY + TRACK_CONFIG.freqH; // 頻率圖從底部往上畫
-      const snrMidY = TRACK_CONFIG.snrY + TRACK_CONFIG.snrH; // SNR 圖從底部往上畫
+      const freqMidY = TRACK_CONFIG.freqY + TRACK_CONFIG.freqH;
+      const snrMidY = TRACK_CONFIG.snrY + TRACK_CONFIG.snrH;
       
       for (let x = 0; x < cssW; x += stepPixels) {
         const t = xToTime(x);
-        const totalDur = getTimelineDuration();
-        if (t >= 0 && t <= totalDur) {
+        if (t >= 0 && t <= getTimelineDuration()) {
            const mapped = mapTimelineToSource(t);
            if (mapped.clipIndex !== -1 && mapped.mediaId) {
                const media = state.mediaPool[mapped.mediaId];
                if (media && media.duration > 0 && media.waveformData && media.waveformData.length > 0) {
                    const idx = Math.floor((mapped.sourceTime / media.duration) * media.waveformData.length);
                    if (idx >= 0 && idx < media.waveformData.length) {
-                      // 畫音量波形 (綠色，雙向)
                       const amp = media.waveformData[idx] * (TRACK_CONFIG.audioH / 2 - 2);
                       if (amp > 0.5) {
-                          tCtx.fillStyle = "#10b981";
-                          tCtx.beginPath();
-                          tCtx.roundRect(x, midY - amp, barWidth, amp * 2, 1.5);
-                          tCtx.fill();
+                          tCtx.fillStyle = "#10b981"; tCtx.beginPath();
+                          tCtx.roundRect(x, midY - amp, barWidth, amp * 2, 1.5); tCtx.fill();
                       }
-                      
-                      // 畫頻率特徵 (青色，單向向上)
                       if (media.freqData && media.freqData[idx]) {
                           const freqAmp = media.freqData[idx] * (TRACK_CONFIG.freqH - 6);
                           if (freqAmp > 0.5) {
-                              tCtx.fillStyle = "#22d3ee"; // Cyan 青色
-                              tCtx.beginPath();
-                              tCtx.roundRect(x, freqMidY - 2 - freqAmp, barWidth, freqAmp, 1.0);
-                              tCtx.fill();
+                              tCtx.fillStyle = "#22d3ee"; tCtx.beginPath();
+                              tCtx.roundRect(x, freqMidY - 2 - freqAmp, barWidth, freqAmp, 1.0); tCtx.fill();
                           }
                       }
-                      
-                      // 畫 SNR 特徵 (橘色，單向向上)
                       if (media.snrData && media.snrData[idx]) {
                           const snrAmp = media.snrData[idx] * (TRACK_CONFIG.snrH - 6);
                           if (snrAmp > 0.5) {
-                              tCtx.fillStyle = "#f97316"; // Orange 橘色
-                              tCtx.beginPath();
-                              tCtx.roundRect(x, snrMidY - 2 - snrAmp, barWidth, snrAmp, 1.0);
-                              tCtx.fill();
+                              tCtx.fillStyle = "#f97316"; tCtx.beginPath();
+                              tCtx.roundRect(x, snrMidY - 2 - snrAmp, barWidth, snrAmp, 1.0); tCtx.fill();
                           }
                       }
                    }
@@ -732,84 +638,49 @@
         }
       }
       
-      // 4. 繪製獨立配樂軌道
-      tCtx.fillStyle = "#0c0a09";
-      tCtx.fillRect(0, TRACK_CONFIG.bgAudioY, cssW, TRACK_CONFIG.bgAudioH);
-      tCtx.fillStyle = "#171717";
-      tCtx.fillRect(0, TRACK_CONFIG.bgAudioY, cssW, TRACK_CONFIG.bgAudioH);
+      tCtx.fillStyle = "#0c0a09"; tCtx.fillRect(0, TRACK_CONFIG.bgAudioY, cssW, TRACK_CONFIG.bgAudioH);
+      tCtx.fillStyle = "#171717"; tCtx.fillRect(0, TRACK_CONFIG.bgAudioY, cssW, TRACK_CONFIG.bgAudioH);
       
       if (state.bgAudioDuration > 0 && state.bgAudioWaveformData.length > 0) {
           const startX = timeToX(state.bgAudioStartTime);
           const endX = timeToX(state.bgAudioStartTime + state.bgAudioDuration);
           const bgClipW = Math.max(2, endX - startX);
-          
           if (startX < cssW && endX > 0) {
-              tCtx.fillStyle = "#4c1d95"; 
-              tCtx.beginPath();
-              tCtx.roundRect(startX, TRACK_CONFIG.bgAudioY + 2, bgClipW, TRACK_CONFIG.bgAudioH - 4, 6);
-              tCtx.fill();
-              
-              tCtx.fillStyle = "#a78bfa"; 
-              const midY = TRACK_CONFIG.bgAudioY + TRACK_CONFIG.bgAudioH / 2;
+              tCtx.fillStyle = "#4c1d95"; tCtx.beginPath();
+              tCtx.roundRect(startX, TRACK_CONFIG.bgAudioY + 2, bgClipW, TRACK_CONFIG.bgAudioH - 4, 6); tCtx.fill();
+              tCtx.fillStyle = "#a78bfa"; const bgMidY = TRACK_CONFIG.bgAudioY + TRACK_CONFIG.bgAudioH / 2;
               for (let x = Math.max(0, startX); x <= Math.min(cssW, endX); x += stepPixels) {
-                  const t = xToTime(x);
-                  const sourceTime = t - state.bgAudioStartTime;
+                  const sourceTime = xToTime(x) - state.bgAudioStartTime;
                   const idx = Math.floor((sourceTime / state.bgAudioDuration) * state.bgAudioWaveformData.length);
                   if (idx >= 0 && idx < state.bgAudioWaveformData.length) {
                       const amp = state.bgAudioWaveformData[idx] * (TRACK_CONFIG.bgAudioH / 2 - 2);
-                      if (amp > 0.5) {
-                          tCtx.beginPath();
-                          tCtx.roundRect(x, midY - amp, barWidth, amp * 2, 1.5);
-                          tCtx.fill();
-                      }
+                      if (amp > 0.5) { tCtx.beginPath(); tCtx.roundRect(x, bgMidY - amp, barWidth, amp * 2, 1.5); tCtx.fill(); }
                   }
               }
           }
       }
 
-      // 拍手審閱點標示 (黃色虛線與頂部箭頭)
       if (state.clapReviewPoints && state.clapReviewPoints.length > 0) {
-        tCtx.strokeStyle = "rgba(234, 179, 8, 0.8)";
-        tCtx.lineWidth = 1.5;
-        tCtx.setLineDash([4, 4]);
+        tCtx.strokeStyle = "rgba(234, 179, 8, 0.8)"; tCtx.lineWidth = 1.5; tCtx.setLineDash([4, 4]);
         state.clapReviewPoints.forEach((pt, idx) => {
             const px = timeToX(pt.timelineSec);
             if (px >= 0 && px <= cssW) {
-                tCtx.beginPath();
-                tCtx.moveTo(px, TRACK_CONFIG.videoY);
-                tCtx.lineTo(px, TRACK_CONFIG.snrY + TRACK_CONFIG.snrH);
-                tCtx.stroke();
-                
-                // 特別高亮目前正在審閱的點
+                tCtx.beginPath(); tCtx.moveTo(px, TRACK_CONFIG.videoY); tCtx.lineTo(px, TRACK_CONFIG.snrY + TRACK_CONFIG.snrH); tCtx.stroke();
                 if (idx === state.clapReviewIndex) {
-                    tCtx.fillStyle = "#eab308";
-                    tCtx.beginPath();
-                    tCtx.moveTo(px - 6, TRACK_CONFIG.videoY - 6);
-                    tCtx.lineTo(px + 6, TRACK_CONFIG.videoY - 6);
-                    tCtx.lineTo(px, TRACK_CONFIG.videoY + 2);
-                    tCtx.fill();
+                    tCtx.fillStyle = "#eab308"; tCtx.beginPath();
+                    tCtx.moveTo(px - 6, TRACK_CONFIG.videoY - 6); tCtx.lineTo(px + 6, TRACK_CONFIG.videoY - 6); tCtx.lineTo(px, TRACK_CONFIG.videoY + 2); tCtx.fill();
                 }
             }
         });
         tCtx.setLineDash([]);
       }
 
-      // 5. 繪製 Playhead (播放游標)
       const playheadX = timeToX(state.currentTime);
       if (playheadX >= 0 && playheadX <= cssW) {
-        tCtx.strokeStyle = "#ef4444";
-        tCtx.lineWidth = 1.5;
-        tCtx.beginPath();
-        tCtx.moveTo(playheadX, 0);
-        tCtx.lineTo(playheadX, rect.height);
-        tCtx.stroke();
+        tCtx.strokeStyle = "#ef4444"; tCtx.lineWidth = 1.5;
+        tCtx.beginPath(); tCtx.moveTo(playheadX, 0); tCtx.lineTo(playheadX, rect.height); tCtx.stroke();
+        tCtx.fillStyle = "#ef4444"; tCtx.beginPath(); tCtx.arc(playheadX, 6, 4, 0, Math.PI * 2); tCtx.fill();
 
-        tCtx.fillStyle = "#ef4444";
-        tCtx.beginPath();
-        tCtx.arc(playheadX, 6, 4, 0, Math.PI * 2);
-        tCtx.fill();
-
-        // --- 新增：當拖曳游標時，顯示當前時間點的波形數據 ---
         if (state.isDraggingScrubber) {
           const mapped = mapTimelineToSource(state.currentTime);
           if (mapped.mediaId && state.mediaPool[mapped.mediaId]) {
@@ -820,28 +691,15 @@
                 const amp = media.waveformData[idx].toFixed(3);
                 const freq = (media.freqData && media.freqData[idx]) ? media.freqData[idx].toFixed(3) : "0.000";
                 const snrVal = (media.snrData && media.snrData[idx]) ? media.snrData[idx].toFixed(3) : "0.000";
-                
-                // 決定提示框畫在游標左邊還是右邊，避免超出螢幕
                 const boxX = playheadX + 90 > cssW ? playheadX - 98 : playheadX + 8;
                 
-                tCtx.fillStyle = "rgba(0, 0, 0, 0.85)";
-                tCtx.strokeStyle = "#3f3f46";
-                tCtx.lineWidth = 1;
-                tCtx.beginPath();
-                tCtx.roundRect(boxX, TRACK_CONFIG.freqY - 10, 85, 48, 6);
-                tCtx.fill();
-                tCtx.stroke();
+                tCtx.fillStyle = "rgba(0, 0, 0, 0.85)"; tCtx.strokeStyle = "#3f3f46"; tCtx.lineWidth = 1;
+                tCtx.beginPath(); tCtx.roundRect(boxX, TRACK_CONFIG.freqY - 10, 85, 48, 6); tCtx.fill(); tCtx.stroke();
                 
-                tCtx.fillStyle = "#10b981";
-                tCtx.font = "bold 9px monospace";
-                tCtx.textAlign = "left";
+                tCtx.fillStyle = "#10b981"; tCtx.font = "bold 9px monospace"; tCtx.textAlign = "left";
                 tCtx.fillText(`Amp:  ${amp}`, boxX + 8, TRACK_CONFIG.freqY + 4);
-                
-                tCtx.fillStyle = "#22d3ee";
-                tCtx.fillText(`Freq: ${freq}`, boxX + 8, TRACK_CONFIG.freqY + 18);
-
-                tCtx.fillStyle = "#f97316";
-                tCtx.fillText(`SNR:  ${snrVal}`, boxX + 8, TRACK_CONFIG.freqY + 32);
+                tCtx.fillStyle = "#22d3ee"; tCtx.fillText(`Freq: ${freq}`, boxX + 8, TRACK_CONFIG.freqY + 18);
+                tCtx.fillStyle = "#f97316"; tCtx.fillText(`SNR:  ${snrVal}`, boxX + 8, TRACK_CONFIG.freqY + 32);
               }
             }
           }
@@ -849,216 +707,131 @@
       }
 
       const totalDur = getTimelineDuration();
-      
       if (state.currentTime >= totalDur) {
-        state.currentTime = 0;
-        state.isPlaying = false;
-        audioPlayer.pause();
-        audioPlayer.currentTime = 0;
-        bgAudioPlayer.pause();
-        bgAudioPlayer.currentTime = 0;
-        btnCenterPlay.classList.remove('hidden');
-        btnPlay.innerHTML = `<i class="ph ph-play text-xl mb-1"></i><span class="text-[10px]">播放</span>`;
+        state.currentTime = 0; state.isPlaying = false;
+        audioPlayer.pause(); audioPlayer.currentTime = 0; bgAudioPlayer.pause(); bgAudioPlayer.currentTime = 0;
+        btnCenterPlay.classList.remove('hidden'); btnPlay.innerHTML = `<i class="ph ph-play text-xl mb-1"></i><span class="text-[10px]">播放</span>`;
       } else if (state.playUntil !== undefined && state.currentTime >= state.playUntil) {
-        // --- 修正預覽播放：到達指定時間時精準暫停 ---
-        state.currentTime = state.playUntil;
-        state.playUntil = undefined;
+        state.currentTime = state.playUntil; state.playUntil = undefined;
         if (state.isPlaying) togglePlay();
       }
 
       const mapped = mapTimelineToSource(state.currentTime);
-      
       if (mapped.mediaId && state.currentMediaId !== mapped.mediaId) {
           state.currentMediaId = mapped.mediaId;
           const media = state.mediaPool[mapped.mediaId];
-          if (media) {
-              video.src = media.src;
-              audioPlayer.src = media.src;
-              video.load();
-              audioPlayer.load();
-              state.lastPlayedClipIndex = -1; 
-          }
+          if (media) { video.src = media.src; audioPlayer.src = media.src; video.load(); audioPlayer.load(); state.lastPlayedClipIndex = -1; }
       }
-
       if (state.lastPlayedClipIndex !== mapped.clipIndex) {
-          audioPlayer.currentTime = mapped.sourceTime;
-          state.lastPlayedClipIndex = mapped.clipIndex;
+          audioPlayer.currentTime = mapped.sourceTime; state.lastPlayedClipIndex = mapped.clipIndex;
       } else if (Math.abs(audioPlayer.currentTime - mapped.sourceTime) > 1.5) {
           audioPlayer.currentTime = mapped.sourceTime;
       }
-      
-      if (audioPlayer.playbackRate !== mapped.speed) {
-          audioPlayer.playbackRate = mapped.speed;
-      }
+      if (audioPlayer.playbackRate !== mapped.speed) audioPlayer.playbackRate = mapped.speed;
 
       if (state.bgAudioSrc) {
           if (state.currentTime >= state.bgAudioStartTime && state.currentTime <= state.bgAudioStartTime + state.bgAudioDuration) {
               const targetBgTime = state.currentTime - state.bgAudioStartTime;
-              if (Math.abs(bgAudioPlayer.currentTime - targetBgTime) > 0.5) {
-                  bgAudioPlayer.currentTime = targetBgTime;
-              }
+              if (Math.abs(bgAudioPlayer.currentTime - targetBgTime) > 0.5) bgAudioPlayer.currentTime = targetBgTime;
               if (bgAudioPlayer.paused) bgAudioPlayer.play().catch(()=>{});
-          } else {
-              if (!bgAudioPlayer.paused) bgAudioPlayer.pause();
-          }
+          } else { if (!bgAudioPlayer.paused) bgAudioPlayer.pause(); }
       }
 
       video.currentTime = mapped.sourceTime;
-      renderPreviewFrame();
-      clampScroll();
-
-      if (state.isPlaying) {
-        requestAnimationFrame(playLoop);
-      }
+      renderPreviewFrame(); clampScroll();
+      if (state.isPlaying) requestAnimationFrame(playLoop);
     }
 
-    // --- 播放動畫迴圈引擎 ---
     let lastAnimTime = 0;
     function playLoop(timestamp) {
       if (!state.isPlaying) return;
       if (!lastAnimTime) lastAnimTime = timestamp;
       const delta = (timestamp - lastAnimTime) / 1000;
       lastAnimTime = timestamp;
-      
       state.currentTime += delta;
       drawTimeline();
     }
 
-    // --- 互動事件綁定 ---
     function togglePlay() {
       if (getTimelineDuration() <= 0) return;
-      
       if (state.isPlaying) {
-        state.isPlaying = false;
-        audioPlayer.pause();
-        btnCenterPlay.classList.remove('hidden');
-        btnPlay.innerHTML = `<i class="ph ph-play text-xl mb-1"></i><span class="text-[10px]">播放</span>`;
+        state.isPlaying = false; audioPlayer.pause();
+        btnCenterPlay.classList.remove('hidden'); btnPlay.innerHTML = `<i class="ph ph-play text-xl mb-1"></i><span class="text-[10px]">播放</span>`;
       } else {
-        state.isPlaying = true;
-        state.lastPlayedClipIndex = -1;
-        
+        state.isPlaying = true; state.lastPlayedClipIndex = -1;
         const mapped = mapTimelineToSource(state.currentTime);
-        audioPlayer.currentTime = mapped.sourceTime;
-        audioPlayer.playbackRate = mapped.speed;
+        audioPlayer.currentTime = mapped.sourceTime; audioPlayer.playbackRate = mapped.speed;
         audioPlayer.play().catch(e => console.warn("音訊播放受阻:", e));
-        
         if (state.bgAudioSrc && state.currentTime >= state.bgAudioStartTime && state.currentTime <= state.bgAudioStartTime + state.bgAudioDuration) {
             bgAudioPlayer.currentTime = state.currentTime - state.bgAudioStartTime;
             bgAudioPlayer.play().catch(e => console.warn("配樂播放受阻:", e));
         }
-
         lastAnimTime = 0;
-        btnCenterPlay.classList.add('hidden');
-        btnPlay.innerHTML = `<i class="ph ph-pause text-xl mb-1"></i><span class="text-[10px]">暫停</span>`;
+        btnCenterPlay.classList.add('hidden'); btnPlay.innerHTML = `<i class="ph ph-pause text-xl mb-1"></i><span class="text-[10px]">暫停</span>`;
         requestAnimationFrame(playLoop);
       }
     }
 
-    btnPlay.addEventListener('click', togglePlay);
-    btnCenterPlay.addEventListener('click', togglePlay);
+    btnPlay.addEventListener('click', togglePlay); btnCenterPlay.addEventListener('click', togglePlay);
 
-    // 新專案邏輯
-    document.getElementById('btnNewProject').addEventListener('click', () => {
-      document.getElementById('newProjectModal').classList.remove('hidden');
-    });
-    document.getElementById('btnCancelNew').addEventListener('click', () => {
-      document.getElementById('newProjectModal').classList.add('hidden');
-    });
+    document.getElementById('btnNewProject').addEventListener('click', () => { document.getElementById('newProjectModal').classList.remove('hidden'); });
+    document.getElementById('btnCancelNew').addEventListener('click', () => { document.getElementById('newProjectModal').classList.add('hidden'); });
     document.getElementById('btnConfirmNew').addEventListener('click', () => {
       document.getElementById('newProjectModal').classList.add('hidden');
-      if (state.mediaPool) {
-        Object.values(state.mediaPool).forEach(m => URL.revokeObjectURL(m.src));
-      }
-      
-      video.src = "";
-      audioPlayer.src = "";
-      bgAudioPlayer.src = "";
-      videoFileInput.value = "";
-      appendVideoFileInput.value = "";
-      bgAudioFileInput.value = "";
-      
-      state.mediaPool = {};
-      state.currentMediaId = null;
-      state.clips = [];
-      
-      state.bgAudioSrc = null;
-      state.bgAudioDuration = 0;
-      state.bgAudioWaveformData = [];
-      state.bgAudioStartTime = 0;
-      
-      state.undoStack = [];
-      state.currentTime = 0;
-      
-      drawTimeline();
-      videoFileInput.click();
+      if (state.mediaPool) Object.values(state.mediaPool).forEach(m => URL.revokeObjectURL(m.src));
+      video.src = ""; audioPlayer.src = ""; bgAudioPlayer.src = "";
+      videoFileInput.value = ""; appendVideoFileInput.value = ""; bgAudioFileInput.value = "";
+      state.mediaPool = {}; state.currentMediaId = null; state.clips = [];
+      state.bgAudioSrc = null; state.bgAudioDuration = 0; state.bgAudioWaveformData = []; state.bgAudioStartTime = 0;
+      state.undoStack = []; state.currentTime = 0;
+      drawTimeline(); videoFileInput.click();
     });
 
     videoFileInput.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      emptyPlaceholder.classList.add('hidden');
-      btnCenterPlay.classList.remove('hidden');
+      emptyPlaceholder.classList.add('hidden'); btnCenterPlay.classList.remove('hidden');
       processNewVideo(file, false);
     });
     
-    document.getElementById('btnAddVideo').addEventListener('click', () => {
-      appendVideoFileInput.click();
-    });
-    
+    document.getElementById('btnAddVideo').addEventListener('click', () => { appendVideoFileInput.click(); });
     appendVideoFileInput.addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      processNewVideo(file, true);
-      showToast("影片已附加至時間軸");
+      const file = e.target.files[0]; if (!file) return;
+      processNewVideo(file, true); showToast("影片已附加至時間軸");
     });
 
-    video.addEventListener('loadeddata', renderPreviewFrame);
-    video.addEventListener('seeked', renderPreviewFrame);
+    video.addEventListener('loadeddata', renderPreviewFrame); video.addEventListener('seeked', renderPreviewFrame);
 
     document.getElementById('btnAddBgAudio').addEventListener('click', () => { bgAudioFileInput.click(); });
     bgAudioFileInput.addEventListener('change', async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
+        const file = e.target.files[0]; if (!file) return;
         const url = URL.createObjectURL(file);
-        state.bgAudioSrc = url;
-        bgAudioPlayer.src = url;
-        bgAudioPlayer.load();
+        state.bgAudioSrc = url; bgAudioPlayer.src = url; bgAudioPlayer.load();
         
         try {
             showToast("分析配樂中...");
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             const arrayBuffer = await file.arrayBuffer();
-            const decodePromise = audioCtx.decodeAudioData(arrayBuffer);
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("配樂解碼超時")), 3000));
-            const audioBuffer = await Promise.race([decodePromise, timeoutPromise]);
+            const audioBuffer = await new Promise((resolve, reject) => {
+              audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
+            });
             
-            state.bgAudioDuration = audioBuffer.duration;
-            state.bgAudioStartTime = state.currentTime; 
-            
+            state.bgAudioDuration = audioBuffer.duration; state.bgAudioStartTime = state.currentTime; 
             const channelData = audioBuffer.getChannelData(0);
-            const numPoints = 800;
-            const step = Math.ceil(channelData.length / numPoints);
+            const numPoints = 800; const step = Math.ceil(channelData.length / numPoints);
             const wave = new Float32Array(numPoints);
             for (let i = 0; i < numPoints; i++) {
-                let sumSquares = 0;
-                let count = 0;
+                let sumSquares = 0; let count = 0;
                 for (let j = 0; j < step && (i * step + j) < channelData.length; j++) {
-                    sumSquares += channelData[i * step + j] ** 2;
-                    count++;
+                    sumSquares += channelData[i * step + j] ** 2; count++;
                 }
                 wave[i] = Math.sqrt(sumSquares / count) * 3.0; 
                 if (wave[i] > 1.0) wave[i] = 1.0;
             }
-            state.bgAudioWaveformData = wave;
-            showToast("配樂載入完成");
-            drawTimeline();
-        } catch (err) {
-            console.error("配樂解析失敗", err);
-            showToast("配樂解析失敗");
-        }
+            state.bgAudioWaveformData = wave; showToast("配樂載入完成"); drawTimeline();
+        } catch (err) { console.error("配樂解析失敗", err); showToast("配樂解析失敗"); }
     });
 
-    // --- 時間軸觸控互動 ---
     function getTouchPos(e) {
       const rect = timelineCanvas.getBoundingClientRect();
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -1069,137 +842,85 @@
     timelineCanvas.addEventListener('pointerdown', (e) => {
       if (getTimelineDuration() <= 0) return;
       if (state.isPlaying) togglePlay(); 
-      
       const pos = getTouchPos(e);
-      if (pos.y <= TRACK_CONFIG.rulerH) {
-        state.isPanning = true;
-        state.lastPanX = pos.x;
-        return;
-      }
-
+      if (pos.y <= TRACK_CONFIG.rulerH) { state.isPanning = true; state.lastPanX = pos.x; return; }
       if (pos.y > TRACK_CONFIG.videoY && pos.y < TRACK_CONFIG.snrY + TRACK_CONFIG.snrH) {
         const clickedTime = xToTime(pos.x);
-        let acc = 0;
-        let foundIdx = -1;
+        let acc = 0; let foundIdx = -1;
         for (let i = 0; i < state.clips.length; i++) {
           const dur = (state.clips[i].outPoint - state.clips[i].inPoint) / (state.clips[i].speed || 1.0);
-          if (clickedTime >= acc && clickedTime <= acc + dur) {
-            foundIdx = i;
-            break;
-          }
+          if (clickedTime >= acc && clickedTime <= acc + dur) { foundIdx = i; break; }
           acc += dur;
         }
-        
         if (foundIdx !== -1) {
-          state.selectedClipIdx = foundIdx;
-          state.isDraggingClip = true;
-          state.draggedClipIdx = foundIdx;
-          state.dragClipInitialX = pos.x;
-          updateSelectedClipUI();
-          return;
+          state.selectedClipIdx = foundIdx; state.isDraggingClip = true; state.draggedClipIdx = foundIdx;
+          state.dragClipInitialX = pos.x; updateSelectedClipUI(); return;
         }
       }
-
       state.isDraggingScrubber = true;
       const t = xToTime(pos.x);
       state.currentTime = Math.max(0, Math.min(t, getTimelineDuration()));
       const mapped = mapTimelineToSource(state.currentTime);
-      video.currentTime = mapped.sourceTime;
-      drawTimeline();
+      video.currentTime = mapped.sourceTime; drawTimeline();
     });
 
     timelineCanvas.addEventListener('pointermove', (e) => {
       if (!state.isDraggingScrubber && !state.isPanning && !state.isDraggingClip) return;
       const pos = getTouchPos(e);
-
       if (state.isPanning) {
-        const dx = pos.x - state.lastPanX;
-        state.lastPanX = pos.x;
+        const dx = pos.x - state.lastPanX; state.lastPanX = pos.x;
         const timeShift = (dx / timelineCanvas.getBoundingClientRect().width) * getVisibleDuration();
-        state.scrollOffsetSec -= timeShift;
-        clampScroll();
-        drawTimeline();
-        return;
+        state.scrollOffsetSec -= timeShift; clampScroll(); drawTimeline(); return;
       }
-      
       if (state.isDraggingClip) {
         const dx = pos.x - state.dragClipInitialX;
         if (Math.abs(dx) > 15) { 
              const t = xToTime(pos.x);
-             let acc = 0;
-             let targetIdx = state.clips.length - 1;
+             let acc = 0; let targetIdx = state.clips.length - 1;
              for (let i = 0; i < state.clips.length; i++) {
                 const dur = (state.clips[i].outPoint - state.clips[i].inPoint) / (state.clips[i].speed || 1.0);
-                if (t >= acc && t <= acc + dur) {
-                    targetIdx = i;
-                    break;
-                }
+                if (t >= acc && t <= acc + dur) { targetIdx = i; break; }
                 acc += dur;
              }
              if (targetIdx !== state.draggedClipIdx && targetIdx >= 0) {
                  saveHistory();
                  const clip = state.clips.splice(state.draggedClipIdx, 1)[0];
                  state.clips.splice(targetIdx, 0, clip);
-                 state.draggedClipIdx = targetIdx;
-                 state.selectedClipIdx = targetIdx;
-                 state.dragClipInitialX = pos.x;
-                 drawTimeline();
+                 state.draggedClipIdx = targetIdx; state.selectedClipIdx = targetIdx;
+                 state.dragClipInitialX = pos.x; drawTimeline();
              }
         }
         return;
       }
-
       if (state.isDraggingScrubber) {
         const t = xToTime(pos.x);
         state.currentTime = Math.max(0, Math.min(t, getTimelineDuration()));
         const mapped = mapTimelineToSource(state.currentTime);
-        video.currentTime = mapped.sourceTime;
-        drawTimeline();
+        video.currentTime = mapped.sourceTime; drawTimeline();
       }
     });
 
-    window.addEventListener('pointerup', () => {
-      state.isDraggingScrubber = false;
-      state.isPanning = false;
-      state.isDraggingClip = false;
-    });
-
+    window.addEventListener('pointerup', () => { state.isDraggingScrubber = false; state.isPanning = false; state.isDraggingClip = false; });
     function updateSelectedClipUI() {
-      if (state.selectedClipIdx >= 0 && state.selectedClipIdx < state.clips.length) {
-        speedIndicator.textContent = `${state.clips[state.selectedClipIdx].speed || 1.0}x`;
-      } else {
-        speedIndicator.textContent = `1.0x`;
-      }
+      if (state.selectedClipIdx >= 0 && state.selectedClipIdx < state.clips.length) speedIndicator.textContent = `${state.clips[state.selectedClipIdx].speed || 1.0}x`;
+      else speedIndicator.textContent = `1.0x`;
       drawTimeline();
     }
 
-    // --- 剪輯按鈕功能 ---
     document.getElementById('btnSplit').addEventListener('click', () => {
       if(state.clips.length === 0) return;
       let acc = 0;
       for (let i = 0; i < state.clips.length; i++) {
-        const clip = state.clips[i];
-        const clipSpeed = clip.speed || 1.0;
+        const clip = state.clips[i]; const clipSpeed = clip.speed || 1.0;
         const dur = (clip.outPoint - clip.inPoint) / clipSpeed;
-        
         if (state.currentTime > acc && state.currentTime < acc + dur) {
           saveHistory();
           const splitOffsetSource = (state.currentTime - acc) * clipSpeed;
           const origOut = clip.outPoint;
-          
           clip.outPoint = clip.inPoint + splitOffsetSource;
-          const newClip = {
-            mediaId: clip.mediaId,
-            inPoint: clip.outPoint,
-            outPoint: origOut,
-            speed: clipSpeed,
-            name: `Clip ${state.clips.length + 1}`
-          };
+          const newClip = { mediaId: clip.mediaId, inPoint: clip.outPoint, outPoint: origOut, speed: clipSpeed, name: `Clip ${state.clips.length + 1}` };
           state.clips.splice(i + 1, 0, newClip);
-          state.selectedClipIdx = i + 1;
-          updateSelectedClipUI();
-          showToast("片段已分割");
-          break;
+          state.selectedClipIdx = i + 1; updateSelectedClipUI(); showToast("片段已分割"); break;
         }
         acc += dur;
       }
@@ -1207,63 +928,42 @@
 
     document.getElementById('btnMerge').addEventListener('click', () => {
       if (state.selectedClipIdx >= 0 && state.selectedClipIdx < state.clips.length - 1) {
-        const clip1 = state.clips[state.selectedClipIdx];
-        const clip2 = state.clips[state.selectedClipIdx + 1];
+        const clip1 = state.clips[state.selectedClipIdx]; const clip2 = state.clips[state.selectedClipIdx + 1];
         if (clip1.mediaId === clip2.mediaId) {
-          saveHistory();
-          clip1.outPoint = Math.max(clip1.outPoint, clip2.outPoint);
-          state.clips.splice(state.selectedClipIdx + 1, 1);
-          updateSelectedClipUI();
-          showToast("相鄰片段已合併");
-        } else {
-          showToast("只能合併來源相同的相鄰片段");
-        }
-      } else {
-        showToast("請選取要合併的前一個片段 (需有下一個片段)");
-      }
+          saveHistory(); clip1.outPoint = Math.max(clip1.outPoint, clip2.outPoint);
+          state.clips.splice(state.selectedClipIdx + 1, 1); updateSelectedClipUI(); showToast("相鄰片段已合併");
+        } else showToast("只能合併來源相同的相鄰片段");
+      } else showToast("請選取要合併的前一個片段");
     });
 
-    // 拍手自動分割 (逐點審閱模式)
+    // ==========================================
+    // 🎯 拍手/打板分割偵測器 (真特徵演算法)
+    // ==========================================
     document.getElementById('btnClapSplit').addEventListener('click', () => {
       if (state.clips.length === 0) return;
-
       showToast("分析時間軸拍手/突波特徵中...");
-      console.log("啟動進階拍手偵測演算法 (瞬態突波分析)...");
-      
       const reviewPoints = [];
-      const minInterval = 0.4; // 兩個拍手點至少間隔 0.4 秒 (避免尾音重複抓取)
+      const minInterval = 0.4; 
       let lastTimelinePeak = -999;
-      
       let acc = 0;
-      // 掃描時間軸上的所有片段
       for (let i = 0; i < state.clips.length; i++) {
-          const clip = state.clips[i];
-          const clipSpeed = clip.speed || 1.0;
+          const clip = state.clips[i]; const clipSpeed = clip.speed || 1.0;
           const dur = (clip.outPoint - clip.inPoint) / clipSpeed;
           const media = state.mediaPool[clip.mediaId];
-          
           if (media && media.waveformData && media.duration > 0) {
               const startIdx = Math.floor((clip.inPoint / media.duration) * media.waveformData.length);
               const endIdx = Math.floor((clip.outPoint / media.duration) * media.waveformData.length);
-              
               for (let j = startIdx; j < endIdx; j++) {
                   const currentSnr = (media.snrData && media.snrData[j]) ? media.snrData[j] : 0;
                   const currentFreq = (media.freqData && media.freqData[j]) ? media.freqData[j] : 0;
                   const currentAmp = (media.waveformData && media.waveformData[j]) ? media.waveformData[j] : 0;
                   
-                  // ========================================================
-                  // 🚀 物理特性修正：拍手是「瞬間突波(Spike)」，不可能持續 0.1 秒！
-                  // 我們改為偵測瞬間的尖刺：只要 SNR 與 高頻 瞬間飆高就抓取。
-                  // ========================================================
+                  // 真實拍手特徵：高頻與 SNR 突波 (放寬絕對音量，專注於物理特徵)
                   const isSpike = currentSnr > 0.1 && currentFreq > 0.1 && currentAmp > 0.03;
-
                   if (isSpike) {
                       const sourceT = (j / media.waveformData.length) * media.duration;
                       const timelineT = acc + (sourceT - clip.inPoint) / clipSpeed;
-                      
-                      // 局部極值鎖定與冷卻機制 (Cooldown)，避免一個拍手抓好幾次
                       if (timelineT - lastTimelinePeak > minInterval) {
-                          // 將標記點微幅回推 0.05 秒到突波的最起點，切割才會剛好在無聲處
                           const peakStart = Math.max(acc, timelineT - 0.05);
                           reviewPoints.push({ timelineSec: peakStart });
                           lastTimelinePeak = timelineT;
@@ -1273,178 +973,104 @@
           }
           acc += dur;
       }
-
-      if (reviewPoints.length === 0) {
-          showToast("未偵測到明顯的拍手或突波聲");
-          console.log("分析完畢：沒有符合『瞬態孤立突波』特徵的聲音。");
-          return;
-      }
-
-      state.clapReviewPoints = reviewPoints;
-      state.clapReviewIndex = 0;
-      showClapReviewUI();
+      if (reviewPoints.length === 0) { showToast("未偵測到明顯的拍手或突波聲"); return; }
+      state.clapReviewPoints = reviewPoints; state.clapReviewIndex = 0; showClapReviewUI();
     });
 
     function showClapReviewUI() {
         document.getElementById('clapReviewModal').classList.remove('hidden');
-        
         const pt = state.clapReviewPoints[state.clapReviewIndex];
         document.getElementById('clapReviewProgress').textContent = `${state.clapReviewIndex + 1}/${state.clapReviewPoints.length}`;
         document.getElementById('clapReviewTime').textContent = formatTime(pt.timelineSec);
-        
         state.currentTime = pt.timelineSec;
-        // 將時間軸置中於該點
         state.scrollOffsetSec = Math.max(0, pt.timelineSec - getVisibleDuration() / 2);
-        clampScroll();
-        drawTimeline();
+        clampScroll(); drawTimeline();
     }
     
     function nextClapReview() {
         state.clapReviewIndex++;
-        if (state.clapReviewIndex < state.clapReviewPoints.length) {
-            showClapReviewUI();
-        } else {
-            endClapReview();
-            showToast("所有拍手點審閱完成！");
-        }
+        if (state.clapReviewIndex < state.clapReviewPoints.length) showClapReviewUI();
+        else { endClapReview(); showToast("所有拍手點審閱完成！"); }
     }
     
     function endClapReview() {
         document.getElementById('clapReviewModal').classList.add('hidden');
-        state.clapReviewPoints = [];
-        state.playUntil = undefined;
+        state.clapReviewPoints = []; state.playUntil = undefined;
         if(state.isPlaying) togglePlay();
         drawTimeline();
     }
 
     document.getElementById('btnClapCancel').addEventListener('click', endClapReview);
     document.getElementById('btnClapSkip').addEventListener('click', nextClapReview);
-    
     document.getElementById('btnClapPrev').addEventListener('click', () => {
-        if (state.clapReviewIndex > 0) {
-            state.clapReviewIndex--;
-            showClapReviewUI();
-        } else {
-            showToast("已經是第一個拍手點了");
-        }
+        if (state.clapReviewIndex > 0) { state.clapReviewIndex--; showClapReviewUI(); }
+        else showToast("已經是第一個拍手點了");
     });
-
     document.getElementById('btnClapPreview').addEventListener('click', () => {
         const pt = state.clapReviewPoints[state.clapReviewIndex];
-        state.currentTime = Math.max(0, pt.timelineSec - 0.5); // 退後 0.5 秒開始
-        state.playUntil = Math.min(getTimelineDuration(), pt.timelineSec + 0.5); // 播到後 0.5 秒停止
+        state.currentTime = Math.max(0, pt.timelineSec - 0.5); 
+        state.playUntil = Math.min(getTimelineDuration(), pt.timelineSec + 0.5); 
         if (!state.isPlaying) togglePlay();
     });
-
     document.getElementById('btnClapConfirm').addEventListener('click', () => {
         const pt = state.clapReviewPoints[state.clapReviewIndex];
-        let acc = 0;
-        let splitSuccess = false;
-        
+        let acc = 0; let splitSuccess = false;
         for (let i = 0; i < state.clips.length; i++) {
-            const clip = state.clips[i];
-            const clipSpeed = clip.speed || 1.0;
+            const clip = state.clips[i]; const clipSpeed = clip.speed || 1.0;
             const dur = (clip.outPoint - clip.inPoint) / clipSpeed;
-            
-            // 確保不在片段最邊緣進行切割 (防呆)
             if (pt.timelineSec > acc + 0.1 && pt.timelineSec < acc + dur - 0.1) {
                 saveHistory();
                 const splitOffsetSource = (pt.timelineSec - acc) * clipSpeed;
-                const origOut = clip.outPoint;
-                clip.outPoint = clip.inPoint + splitOffsetSource;
-                
-                const newClip = {
-                    mediaId: clip.mediaId,
-                    inPoint: clip.outPoint,
-                    outPoint: origOut,
-                    speed: clipSpeed,
-                    name: `Clip ${state.clips.length + 1}`
-                };
-                state.clips.splice(i + 1, 0, newClip);
-                splitSuccess = true;
-                break; 
+                const origOut = clip.outPoint; clip.outPoint = clip.inPoint + splitOffsetSource;
+                const newClip = { mediaId: clip.mediaId, inPoint: clip.outPoint, outPoint: origOut, speed: clipSpeed, name: `Clip ${state.clips.length + 1}` };
+                state.clips.splice(i + 1, 0, newClip); splitSuccess = true; break; 
             }
             acc += dur;
         }
-        
-        if (splitSuccess) {
-            showToast("已在此處精準分割");
-            drawTimeline();
-        } else {
-            showToast("無法分割 (點擊位置太靠近片段邊界)");
-        }
+        if (splitSuccess) { showToast("已在此處精準分割"); drawTimeline(); }
+        else showToast("無法分割 (點擊位置太靠近片段邊界)");
         nextClapReview();
     });
 
     document.getElementById('btnRename').addEventListener('click', () => {
       if (state.selectedClipIdx >= 0) {
         const name = prompt("輸入新名稱:", state.clips[state.selectedClipIdx].name);
-        if (name) {
-          saveHistory();
-          state.clips[state.selectedClipIdx].name = name;
-          drawTimeline();
-        }
-      } else {
-        showToast("請先選取片段");
-      }
+        if (name) { saveHistory(); state.clips[state.selectedClipIdx].name = name; drawTimeline(); }
+      } else showToast("請先選取片段");
     });
 
     document.getElementById('btnCut').addEventListener('click', () => {
       if (state.selectedClipIdx >= 0 && state.clips.length > 1) {
-        saveHistory();
-        state.clipboard = JSON.parse(JSON.stringify(state.clips[state.selectedClipIdx]));
-        state.clips.splice(state.selectedClipIdx, 1);
-        state.selectedClipIdx = Math.max(0, state.selectedClipIdx - 1);
-        updateSelectedClipUI();
-        showToast("已剪下片段");
-      } else if (state.clips.length <= 1) {
-        showToast("無法剪下最後一個片段");
-      } else {
-        showToast("請先選取片段");
-      }
+        saveHistory(); state.clipboard = JSON.parse(JSON.stringify(state.clips[state.selectedClipIdx]));
+        state.clips.splice(state.selectedClipIdx, 1); state.selectedClipIdx = Math.max(0, state.selectedClipIdx - 1);
+        updateSelectedClipUI(); showToast("已剪下片段");
+      } else if (state.clips.length <= 1) showToast("無法剪下最後一個片段");
+      else showToast("請先選取片段");
     });
 
     document.getElementById('btnCopy').addEventListener('click', () => {
-      if (state.selectedClipIdx >= 0) {
-        state.clipboard = JSON.parse(JSON.stringify(state.clips[state.selectedClipIdx]));
-        showToast("已複製片段");
-      } else {
-        showToast("請先選取片段");
-      }
+      if (state.selectedClipIdx >= 0) { state.clipboard = JSON.parse(JSON.stringify(state.clips[state.selectedClipIdx])); showToast("已複製片段"); }
+      else showToast("請先選取片段");
     });
 
     document.getElementById('btnPaste').addEventListener('click', () => {
       if (state.clipboard) {
         saveHistory();
-        const newClip = JSON.parse(JSON.stringify(state.clipboard));
-        newClip.name = newClip.name + " (複製)";
-        
+        const newClip = JSON.parse(JSON.stringify(state.clipboard)); newClip.name = newClip.name + " (複製)";
         const insertIdx = state.selectedClipIdx >= 0 ? state.selectedClipIdx + 1 : state.clips.length;
-        state.clips.splice(insertIdx, 0, newClip);
-        state.selectedClipIdx = insertIdx;
-        
-        updateSelectedClipUI();
-        showToast("已貼上片段");
-      } else {
-        showToast("剪貼簿為空，請先複製或剪下");
-      }
+        state.clips.splice(insertIdx, 0, newClip); state.selectedClipIdx = insertIdx;
+        updateSelectedClipUI(); showToast("已貼上片段");
+      } else showToast("剪貼簿為空，請先複製或剪下");
     });
 
     document.getElementById('btnDelete').addEventListener('click', () => {
       if (state.selectedClipIdx >= 0 && state.clips.length > 1) {
-        saveHistory();
-        state.clips.splice(state.selectedClipIdx, 1);
-        state.selectedClipIdx = Math.max(0, state.selectedClipIdx - 1);
-        updateSelectedClipUI();
-        showToast("片段已刪除");
-      } else if (state.clips.length <= 1) {
-        showToast("無法刪除最後一個片段");
-      } else {
-        showToast("請先選取片段");
-      }
+        saveHistory(); state.clips.splice(state.selectedClipIdx, 1); state.selectedClipIdx = Math.max(0, state.selectedClipIdx - 1);
+        updateSelectedClipUI(); showToast("片段已刪除");
+      } else if (state.clips.length <= 1) showToast("無法刪除最後一個片段");
+      else showToast("請先選取片段");
     });
 
-    // 速度變更綁定
     document.getElementById('btnSpeed').addEventListener('click', () => {
       if (state.selectedClipIdx >= 0) {
         const currentSpeed = state.clips[state.selectedClipIdx].speed || 1.0;
@@ -1452,137 +1078,64 @@
         if (speedStr !== null) {
           const speed = parseFloat(speedStr);
           if (!isNaN(speed) && speed >= 0.1 && speed <= 10.0) {
-            saveHistory();
-            state.clips[state.selectedClipIdx].speed = speed;
-            updateSelectedClipUI();
-            showToast(`速度已設為 ${speed}x`);
-            console.log(`[速度變更] ${state.clips[state.selectedClipIdx].name} 速度調整為 ${speed}x`);
-          } else {
-            showToast("請輸入有效的數字速度！");
-          }
+            saveHistory(); state.clips[state.selectedClipIdx].speed = speed; updateSelectedClipUI(); showToast(`速度已設為 ${speed}x`);
+          } else showToast("請輸入有效的數字速度！");
         }
-      } else {
-        showToast("請先選取片段");
-      }
+      } else showToast("請先選取片段");
     });
 
     document.getElementById('btnZoomIn').addEventListener('click', () => { state.zoomFactor = Math.min(state.zoomFactor * 1.5, 50.0); clampScroll(); drawTimeline(); });
     document.getElementById('btnZoomOut').addEventListener('click', () => { state.zoomFactor = Math.max(state.zoomFactor / 1.5, 1.0); clampScroll(); drawTimeline(); });
 
-    // 單獨匯出選取片段 (彈出分享與儲存)
     document.getElementById('btnExportClip').addEventListener('click', () => {
       if (state.selectedClipIdx >= 0) {
         const clip = state.clips[state.selectedClipIdx];
-        const clipSpeed = clip.speed || 1.0;
-        const dur = (clip.outPoint - clip.inPoint) / clipSpeed;
-        
-        console.log(`[單獨匯出片段] 準備匯出: ${clip.name}`);
-        console.log(`- 來源起點: ${clip.inPoint.toFixed(2)}s, 來源終點: ${clip.outPoint.toFixed(2)}s, 速度: ${clipSpeed}x`);
-        
-        timelineOverlayText.textContent = `正在匯出 ${clip.name}...`;
-        timelineOverlay.classList.remove('hidden');
-        
-        // 模擬匯出運算時間，完成後觸發系統分享與下載
+        timelineOverlayText.textContent = `正在匯出 ${clip.name}...`; timelineOverlay.classList.remove('hidden');
         setTimeout(async () => {
-          timelineOverlay.classList.add('hidden');
-          timelineOverlayText.textContent = `處理中...`;
-          
-          // 建立一個假的佔位檔案，來喚醒 iOS/Android 系統的分享與下載選單
+          timelineOverlay.classList.add('hidden'); timelineOverlayText.textContent = `處理中...`;
           const dummyContent = "ClipCut Export Placeholder - 這裡在實際產品中會是轉檔後的 mp4 二進制資料";
           const dummyBlob = new Blob([dummyContent], { type: 'video/mp4' });
-          
-          // 取一個安全的檔案名稱
-          let safeFileName = clip.name.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5]/g, '_');
-          if(!safeFileName) safeFileName = "Clip";
+          let safeFileName = clip.name.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5]/g, '_'); if(!safeFileName) safeFileName = "Clip";
           const exportFileName = `ClipCut_${safeFileName}.mp4`;
-
-          // 判斷是否為行動裝置 (手機/平板)
           const isMobile = /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-
-          // 只有在支援 Share API「且」是行動裝置時，才呼叫原生分享選單
           if (navigator.share && isMobile) {
             try {
               const fileToShare = new File([dummyBlob], exportFileName, { type: 'video/mp4' });
-              await navigator.share({
-                title: `匯出影片: ${clip.name}`,
-                text: '這是我用 ClipCut Web 剪輯出來的片段！',
-                files: [fileToShare]
-              });
+              await navigator.share({ title: `匯出影片: ${clip.name}`, text: '這是我用 ClipCut Web 剪輯出來的片段！', files: [fileToShare] });
               showToast("分享/儲存成功！");
-              console.log("✅ 成功呼叫系統 Share API。");
-            } catch (error) {
-              console.log("使用者取消分享或 Share API 失敗，改為直接下載:", error);
-              triggerDirectDownload(dummyBlob, exportFileName);
-            }
-          } else {
-            // 如果是在電腦版或是舊版瀏覽器，直接觸發檔案下載
-            console.log("偵測為電腦版或不支援 Share API，觸發傳統直接下載。");
-            triggerDirectDownload(dummyBlob, exportFileName);
-          }
+            } catch (error) { triggerDirectDownload(dummyBlob, exportFileName); }
+          } else triggerDirectDownload(dummyBlob, exportFileName);
         }, 1500);
-      } else {
-        showToast("請先在時間軸上選取要匯出的片段 (亮藍色)");
-      }
+      } else showToast("請先在時間軸上選取片段");
     });
     
     function triggerDirectDownload(blob, fileName) {
         const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        const a = document.createElement('a'); a.href = url; a.download = fileName;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
         showToast(`已下載檔案: ${fileName}`);
     }
 
-    // --- 防止 iOS Safari 全域雙指縮放 ---
-    document.addEventListener('touchmove', function (e) {
-      if (e.touches.length > 1) {
-        e.preventDefault();
-      }
-    }, { passive: false });
-
-    // --- 時間軸雙指縮放 (Pinch-to-Zoom) ---
-    let initialPinchDistance = null;
-    let initialZoomFactor = 1.0;
-
+    document.addEventListener('touchmove', function (e) { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+    let initialPinchDistance = null; let initialZoomFactor = 1.0;
     timelineCanvas.addEventListener('touchstart', (e) => {
       if (e.touches.length === 2) {
-        initialPinchDistance = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY
-        );
-        initialZoomFactor = state.zoomFactor;
-        state.isDraggingScrubber = false;
-        state.isPanning = false;
-        state.isDraggingClip = false;
+        initialPinchDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+        initialZoomFactor = state.zoomFactor; state.isDraggingScrubber = false; state.isPanning = false; state.isDraggingClip = false;
       }
     }, { passive: false });
-
     timelineCanvas.addEventListener('touchmove', (e) => {
       if (e.touches.length === 2) {
         e.preventDefault(); 
         if (initialPinchDistance) {
-          const currentDistance = Math.hypot(
-            e.touches[0].clientX - e.touches[1].clientX,
-            e.touches[0].clientY - e.touches[1].clientY
-          );
+          const currentDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
           const scale = currentDistance / initialPinchDistance;
           state.zoomFactor = Math.max(1.0, Math.min(initialZoomFactor * scale, 50.0));
-          clampScroll();
-          drawTimeline();
+          clampScroll(); drawTimeline();
         }
       }
     }, { passive: false });
-
-    timelineCanvas.addEventListener('touchend', (e) => {
-      if (e.touches.length < 2) {
-        initialPinchDistance = null;
-      }
-    });
-
+    timelineCanvas.addEventListener('touchend', (e) => { if (e.touches.length < 2) initialPinchDistance = null; });
   </script>
 </body>
 </html>
