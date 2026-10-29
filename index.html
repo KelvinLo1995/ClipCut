@@ -89,7 +89,7 @@
     <div class="flex items-center gap-1.5 flex-shrink-0">
       <i class="ph ph-scissors text-yellow-500 text-xl sm:text-2xl"></i>
       <h1 class="font-bold text-sm sm:text-lg tracking-wide text-gray-100 whitespace-nowrap">ClipCut</h1>
-      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.6</span>
+      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.7</span>
     </div>
     <div class="flex items-center gap-1 sm:gap-3 flex-shrink-0">
       <button id="btnNewProject" class="flex items-center gap-1 text-xs sm:text-sm bg-gray-800 text-gray-300 px-2.5 py-1.5 rounded-full font-medium active:scale-95 transition whitespace-nowrap flex-shrink-0">
@@ -1400,16 +1400,17 @@
     document.getElementById('btnZoomOut').addEventListener('click', () => { state.zoomFactor = Math.max(state.zoomFactor / 1.5, 1.0); clampScroll(); drawTimeline(); });
 
     // ==============================================================
-    // v1.5 real browser export. Records actual rendered frames, never a
-    // text placeholder carrying a false .mp4 extension.
+    // v1.7 quality export: continuous source playback + decoded-frame
+    // callbacks + original clip audio. No per-frame seeking.
     // ==============================================================
     function chooseExportFormat() {
       if (!window.MediaRecorder) throw new Error("此瀏覽器不支援 MediaRecorder 匯出");
       const candidates = [
-        { mime: 'video/mp4;codecs=avc1.42E01E', ext: 'mp4' },
+        { mime: 'video/mp4;codecs="avc1.640028,mp4a.40.2"', ext: 'mp4' },
+        { mime: 'video/mp4;codecs="avc1.4D4028,mp4a.40.2"', ext: 'mp4' },
         { mime: 'video/mp4', ext: 'mp4' },
-        { mime: 'video/webm;codecs=vp9', ext: 'webm' },
-        { mime: 'video/webm;codecs=vp8', ext: 'webm' },
+        { mime: 'video/webm;codecs=vp9,opus', ext: 'webm' },
+        { mime: 'video/webm;codecs=vp8,opus', ext: 'webm' },
         { mime: 'video/webm', ext: 'webm' }
       ];
       for (const item of candidates) {
@@ -1422,56 +1423,7 @@
       return String(name || 'ClipCut Export').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'ClipCut Export';
     }
 
-    async function seekExportVideo(element, time) {
-      if (Math.abs(element.currentTime - time) < 0.025) return;
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { cleanup(); reject(new Error("影片定位逾時")); }, 8000);
-        const cleanup = () => {
-          clearTimeout(timer);
-          element.removeEventListener('seeked', done);
-          element.removeEventListener('error', failed);
-        };
-        const done = () => { cleanup(); resolve(); };
-        const failed = () => { cleanup(); reject(new Error("影片定位失敗")); };
-        element.addEventListener('seeked', done, { once: true });
-        element.addEventListener('error', failed, { once: true });
-        try { element.currentTime = Math.max(0, Math.min(time, element.duration || time)); }
-        catch (error) { cleanup(); reject(error); }
-      });
-    }
-
-    async function loadExportSource(element, src) {
-      if (element.src === src && element.readyState >= 2) return;
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { cleanup(); reject(new Error("來源影片載入逾時")); }, 12000);
-        const cleanup = () => {
-          clearTimeout(timer);
-          element.removeEventListener('loadeddata', done);
-          element.removeEventListener('error', failed);
-        };
-        const done = () => { cleanup(); resolve(); };
-        const failed = () => { cleanup(); reject(new Error("來源影片無法載入")); };
-        element.addEventListener('loadeddata', done, { once: true });
-        element.addEventListener('error', failed, { once: true });
-        element.src = src;
-        element.load();
-      });
-    }
-
-    function drawExportFrame(ctx, canvas, sourceVideo) {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      const vw = sourceVideo.videoWidth || canvas.width;
-      const vh = sourceVideo.videoHeight || canvas.height;
-      const scale = Math.min(canvas.width / vw, canvas.height / vh);
-      const dw = vw * scale;
-      const dh = vh * scale;
-      ctx.drawImage(sourceVideo, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
-    }
-
     function inferOriginalFps(media) {
-      // Browser media metadata does not expose the source FPS reliably. Keep a
-      // stored value when available; otherwise use 30 FPS as a safe original fallback.
       const value = Number(media && media.frameRate);
       return Number.isFinite(value) && value >= 1 && value <= 120 ? value : 30;
     }
@@ -1488,29 +1440,158 @@
           height *= scale;
         }
       }
-      // H.264 encoders are more reliable with even dimensions.
-      width = Math.max(2, Math.round(width / 2) * 2);
-      height = Math.max(2, Math.round(height / 2) * 2);
-      return { width, height };
+      return {
+        width: Math.max(2, Math.round(width / 2) * 2),
+        height: Math.max(2, Math.round(height / 2) * 2)
+      };
     }
 
-    function chooseVideoBitrate(width, height, fps) {
-      const pixelsPerSecond = width * height * fps;
-      return Math.max(1500000, Math.min(45000000, Math.round(pixelsPerSecond * 0.12)));
+    function chooseQualityBitrate(width, height, fps) {
+      // A deliberately high quality target. MediaRecorder may choose a nearby
+      // implementation-specific rate, but this avoids the low v1.6 ceiling.
+      const target = width * height * fps * 0.24;
+      return Math.max(4000000, Math.min(100000000, Math.round(target)));
+    }
+
+    function drawExportFrame(ctx, canvas, sourceVideo) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const vw = sourceVideo.videoWidth || canvas.width;
+      const vh = sourceVideo.videoHeight || canvas.height;
+      const scale = Math.min(canvas.width / vw, canvas.height / vh);
+      const dw = vw * scale;
+      const dh = vh * scale;
+      ctx.drawImage(sourceVideo, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+    }
+
+    async function loadExportSource(element, src) {
+      if (element.src === src && element.readyState >= 2) return;
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { cleanup(); reject(new Error("來源影片載入逾時")); }, 15000);
+        const cleanup = () => {
+          clearTimeout(timer);
+          element.removeEventListener('loadeddata', done);
+          element.removeEventListener('error', failed);
+        };
+        const done = () => { cleanup(); resolve(); };
+        const failed = () => { cleanup(); reject(new Error("來源影片無法載入")); };
+        element.addEventListener('loadeddata', done, { once: true });
+        element.addEventListener('error', failed, { once: true });
+        element.src = src;
+        element.load();
+      });
+    }
+
+    async function seekExportVideo(element, time) {
+      if (Math.abs(element.currentTime - time) < 0.015) return;
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { cleanup(); reject(new Error("影片定位逾時")); }, 10000);
+        const cleanup = () => {
+          clearTimeout(timer);
+          element.removeEventListener('seeked', done);
+          element.removeEventListener('error', failed);
+        };
+        const done = () => { cleanup(); resolve(); };
+        const failed = () => { cleanup(); reject(new Error("影片定位失敗")); };
+        element.addEventListener('seeked', done, { once: true });
+        element.addEventListener('error', failed, { once: true });
+        element.currentTime = Math.max(0, time);
+      });
+    }
+
+    function buildExportSegments(startSec, endSec) {
+      const segments = [];
+      let timelineCursor = 0;
+      for (let index = 0; index < state.clips.length; index++) {
+        const clip = state.clips[index];
+        const speed = clip.speed || 1;
+        const timelineDuration = (clip.outPoint - clip.inPoint) / speed;
+        const clipTimelineStart = timelineCursor;
+        const clipTimelineEnd = timelineCursor + timelineDuration;
+        const overlapStart = Math.max(startSec, clipTimelineStart);
+        const overlapEnd = Math.min(endSec, clipTimelineEnd);
+        if (overlapEnd > overlapStart) {
+          segments.push({
+            clipIndex: index,
+            mediaId: clip.mediaId,
+            speed,
+            sourceStart: clip.inPoint + (overlapStart - clipTimelineStart) * speed,
+            sourceEnd: clip.inPoint + (overlapEnd - clipTimelineStart) * speed,
+            timelineDuration: overlapEnd - overlapStart
+          });
+        }
+        timelineCursor = clipTimelineEnd;
+      }
+      return segments;
+    }
+
+    async function renderSegmentContinuously(sourceVideo, segment, exportCtx, exportCanvas, progressState, onProgress) {
+      await seekExportVideo(sourceVideo, segment.sourceStart);
+      sourceVideo.playbackRate = Math.max(0.1, Math.min(10, segment.speed));
+      drawExportFrame(exportCtx, exportCanvas, sourceVideo);
+
+      await new Promise(async (resolve, reject) => {
+        let settled = false;
+        let frameHandle = null;
+        let rafHandle = null;
+        const safetyTimer = setTimeout(() => finish(new Error("片段播放逾時")), segment.timelineDuration * 1000 + 15000);
+
+        const cleanup = () => {
+          clearTimeout(safetyTimer);
+          if (frameHandle != null && sourceVideo.cancelVideoFrameCallback) sourceVideo.cancelVideoFrameCallback(frameHandle);
+          if (rafHandle != null) cancelAnimationFrame(rafHandle);
+          sourceVideo.removeEventListener('error', mediaError);
+          sourceVideo.removeEventListener('ended', mediaEnded);
+        };
+        const finish = (error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          sourceVideo.pause();
+          if (error) reject(error); else resolve();
+        };
+        const mediaError = () => finish(new Error("匯出期間來源影片發生錯誤"));
+        const mediaEnded = () => finish();
+        sourceVideo.addEventListener('error', mediaError, { once: true });
+        sourceVideo.addEventListener('ended', mediaEnded, { once: true });
+
+        const processDecodedFrame = (mediaTime) => {
+          if (settled) return;
+          drawExportFrame(exportCtx, exportCanvas, sourceVideo);
+          const sourceProgress = Math.max(0, Math.min(segment.sourceEnd - segment.sourceStart, mediaTime - segment.sourceStart));
+          const timelineProgress = sourceProgress / segment.speed;
+          onProgress(progressState.completed + timelineProgress);
+          if (mediaTime >= segment.sourceEnd - 0.003) {
+            finish();
+            return;
+          }
+          if (sourceVideo.requestVideoFrameCallback) {
+            frameHandle = sourceVideo.requestVideoFrameCallback((_, metadata) => processDecodedFrame(metadata.mediaTime));
+          } else {
+            rafHandle = requestAnimationFrame(() => processDecodedFrame(sourceVideo.currentTime));
+          }
+        };
+
+        if (sourceVideo.requestVideoFrameCallback) {
+          frameHandle = sourceVideo.requestVideoFrameCallback((_, metadata) => processDecodedFrame(metadata.mediaTime));
+        } else {
+          rafHandle = requestAnimationFrame(() => processDecodedFrame(sourceVideo.currentTime));
+        }
+
+        try { await sourceVideo.play(); }
+        catch (error) { finish(error); }
+      });
     }
 
     let pendingExportRequest = null;
+    let preparedExportAudioContext = null;
 
     function requestExportSettings(request) {
       pendingExportRequest = request;
-      const modal = document.getElementById('exportSettingsModal');
-      const target = document.getElementById('exportSettingsTarget');
-      const resolution = document.getElementById('exportResolution');
-      const fps = document.getElementById('exportFps');
-      target.textContent = request.label;
-      resolution.value = localStorage.getItem('clipcut-export-resolution') || '1080';
-      fps.value = localStorage.getItem('clipcut-export-fps') || '30';
-      modal.classList.remove('hidden');
+      document.getElementById('exportSettingsTarget').textContent = request.label;
+      document.getElementById('exportResolution').value = localStorage.getItem('clipcut-export-resolution') || '1080';
+      document.getElementById('exportFps').value = localStorage.getItem('clipcut-export-fps') || '30';
+      document.getElementById('exportSettingsModal').classList.remove('hidden');
     }
 
     document.getElementById('btnCancelExportSettings').addEventListener('click', () => {
@@ -1524,123 +1605,128 @@
       const fps = document.getElementById('exportFps').value;
       localStorage.setItem('clipcut-export-resolution', resolution);
       localStorage.setItem('clipcut-export-fps', fps);
+
+      // Create/resume synchronously in this trusted tap for iOS.
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      preparedExportAudioContext = AudioContextClass ? new AudioContextClass() : null;
+      if (preparedExportAudioContext && preparedExportAudioContext.state === 'suspended') {
+        preparedExportAudioContext.resume().catch(() => {});
+      }
+
       const request = pendingExportRequest;
       pendingExportRequest = null;
       document.getElementById('exportSettingsModal').classList.add('hidden');
-      runExport(request.startSec, request.endSec, request.name, { resolution, fps });
+      runExport(request.startSec, request.endSec, request.name, { resolution, fps }, preparedExportAudioContext);
     });
 
-    async function exportTimelineRange(startSec, endSec, baseName, exportOptions) {
-      if (!(endSec > startSec)) throw new Error("匯出範圍無效");
+    async function exportTimelineRange(startSec, endSec, baseName, exportOptions, exportAudioContext) {
+      const segments = buildExportSegments(startSec, endSec);
+      if (!segments.length) throw new Error("匯出範圍沒有影片");
       const format = chooseExportFormat();
       if (!HTMLCanvasElement.prototype.captureStream) throw new Error("此瀏覽器不支援 Canvas 影片匯出");
 
-      const firstMap = mapTimelineToSource(startSec);
-      if (firstMap.clipIndex < 0) throw new Error("匯出範圍沒有影片");
-      const firstMedia = state.mediaPool[firstMap.mediaId];
+      const firstMedia = state.mediaPool[segments[0].mediaId];
       if (!firstMedia) throw new Error("找不到來源影片");
-
       const sourceVideo = document.createElement('video');
       sourceVideo.muted = true;
+      sourceVideo.volume = 1;
       sourceVideo.playsInline = true;
       sourceVideo.preload = 'auto';
-      sourceVideo.style.display = 'none';
+      sourceVideo.style.position = 'fixed';
+      sourceVideo.style.width = '1px';
+      sourceVideo.style.height = '1px';
+      sourceVideo.style.opacity = '0.01';
+      sourceVideo.style.pointerEvents = 'none';
+      sourceVideo.style.left = '-2px';
       document.body.appendChild(sourceVideo);
 
       let recorder = null;
-      let stream = null;
+      let outputStream = null;
+      let audioSourceNode = null;
+      let audioDestination = null;
       try {
         await loadExportSource(sourceVideo, firstMedia.src);
-        const sourceWidth = sourceVideo.videoWidth || 1280;
-        const sourceHeight = sourceVideo.videoHeight || 720;
-        const firstMediaFps = inferOriginalFps(firstMedia);
-        const requestedFps = exportOptions.fps === 'original' ? firstMediaFps : Number(exportOptions.fps);
+        const requestedFps = exportOptions.fps === 'original' ? inferOriginalFps(firstMedia) : Number(exportOptions.fps);
         const exportFps = Math.max(1, Math.min(60, Number.isFinite(requestedFps) ? requestedFps : 30));
-        const exportSize = calculateExportSize(sourceWidth, sourceHeight, exportOptions.resolution);
+        const exportSize = calculateExportSize(sourceVideo.videoWidth, sourceVideo.videoHeight, exportOptions.resolution);
         const exportCanvas = document.createElement('canvas');
         exportCanvas.width = exportSize.width;
         exportCanvas.height = exportSize.height;
-        const exportCtx = exportCanvas.getContext('2d', { alpha: false });
-        stream = exportCanvas.captureStream(exportFps);
+        const exportCtx = exportCanvas.getContext('2d', { alpha: false, desynchronized: false });
+        const canvasStream = exportCanvas.captureStream(exportFps);
+        outputStream = new MediaStream(canvasStream.getVideoTracks());
 
-        console.log(`匯出設定: ${exportCanvas.width}x${exportCanvas.height}, ${exportFps} FPS, ${format.mime}`);
+        // Add actual edited clip audio to the recording when Web Audio is available.
+        if (exportAudioContext) {
+          if (exportAudioContext.state === 'suspended') await exportAudioContext.resume();
+          audioSourceNode = exportAudioContext.createMediaElementSource(sourceVideo);
+          audioDestination = exportAudioContext.createMediaStreamDestination();
+          audioSourceNode.connect(audioDestination);
+          audioDestination.stream.getAudioTracks().forEach((track) => outputStream.addTrack(track));
+        }
+
+        const bitrate = chooseQualityBitrate(exportCanvas.width, exportCanvas.height, exportFps);
+        console.log(`高品質匯出: ${exportCanvas.width}x${exportCanvas.height}, ${exportFps} FPS, ${(bitrate / 1000000).toFixed(1)} Mbps, ${format.mime}`);
         const chunks = [];
-        recorder = new MediaRecorder(stream, {
+        recorder = new MediaRecorder(outputStream, {
           mimeType: format.mime,
-          videoBitsPerSecond: chooseVideoBitrate(exportCanvas.width, exportCanvas.height, exportFps)
+          videoBitsPerSecond: bitrate,
+          audioBitsPerSecond: 192000
         });
-        recorder.ondataavailable = (event) => {
-          if (event.data && event.data.size > 0) chunks.push(event.data);
-        };
+        recorder.ondataavailable = (event) => { if (event.data && event.data.size > 0) chunks.push(event.data); };
         const stopped = new Promise((resolve, reject) => {
           recorder.onstop = resolve;
           recorder.onerror = (event) => reject(event.error || new Error("MediaRecorder 編碼失敗"));
         });
+        drawExportFrame(exportCtx, exportCanvas, sourceVideo);
         recorder.start(1000);
 
-        const exportDuration = endSec - startSec;
-        const startedAt = performance.now();
-        let activeMediaId = null;
-        let previousSourceTime = -1;
-
-        while (true) {
-          const elapsed = (performance.now() - startedAt) / 1000;
-          if (elapsed >= exportDuration) break;
-          const timelineTime = Math.min(endSec - 0.001, startSec + elapsed);
-          const mapped = mapTimelineToSource(timelineTime);
-          if (mapped.clipIndex < 0) break;
-          const media = state.mediaPool[mapped.mediaId];
+        const totalDuration = endSec - startSec;
+        const progressState = { completed: 0 };
+        for (let index = 0; index < segments.length; index++) {
+          const segment = segments[index];
+          const media = state.mediaPool[segment.mediaId];
           if (!media) throw new Error("匯出期間找不到來源媒體");
-
-          if (activeMediaId !== mapped.mediaId) {
-            await loadExportSource(sourceVideo, media.src);
-            activeMediaId = mapped.mediaId;
-            previousSourceTime = -1;
-          }
-          // Follow the edit timeline exactly, including trims, cuts and speed.
-          if (previousSourceTime < 0 || Math.abs(sourceVideo.currentTime - mapped.sourceTime) > 0.08) {
-            await seekExportVideo(sourceVideo, mapped.sourceTime);
-          }
-          previousSourceTime = mapped.sourceTime;
-          drawExportFrame(exportCtx, exportCanvas, sourceVideo);
-          const percent = Math.min(100, Math.round((elapsed / exportDuration) * 100));
-          timelineOverlayText.textContent = `正在匯出 ${percent}% (${format.ext.toUpperCase()})`;
-          await new Promise((resolve) => setTimeout(resolve, 1000 / exportFps));
+          if (sourceVideo.src !== media.src) await loadExportSource(sourceVideo, media.src);
+          await renderSegmentContinuously(sourceVideo, segment, exportCtx, exportCanvas, progressState, (completed) => {
+            const percent = Math.min(100, Math.round((completed / totalDuration) * 100));
+            timelineOverlayText.textContent = `高品質匯出 ${percent}% (${format.ext.toUpperCase()})`;
+          });
+          progressState.completed += segment.timelineDuration;
         }
 
-        drawExportFrame(exportCtx, exportCanvas, sourceVideo);
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 150));
         recorder.stop();
         await stopped;
-
         if (!chunks.length) throw new Error("編碼器沒有產生任何影片資料");
         const actualMime = recorder.mimeType || format.mime;
         const actualExt = actualMime.includes('mp4') ? 'mp4' : 'webm';
         const blob = new Blob(chunks, { type: actualMime });
-        if (blob.size < 1024) throw new Error("匯出的影片資料不完整");
+        if (blob.size < 4096) throw new Error("匯出的影片資料不完整");
         const fileName = `${safeExportName(baseName)}.${actualExt}`;
         await saveExportBlob(blob, fileName);
-        console.log(`匯出完成: ${fileName}, MIME: ${actualMime}, ${(blob.size / 1048576).toFixed(2)} MB`);
+        console.log(`高品質匯出完成: ${fileName}, ${(blob.size / 1048576).toFixed(2)} MB`);
         showToast(`匯出完成: ${fileName}`);
       } finally {
-        if (recorder && recorder.state !== 'inactive') {
-          try { recorder.stop(); } catch (_) {}
-        }
-        if (stream) stream.getTracks().forEach((track) => track.stop());
+        if (recorder && recorder.state !== 'inactive') { try { recorder.stop(); } catch (_) {} }
+        if (outputStream) outputStream.getTracks().forEach((track) => track.stop());
+        try { if (audioSourceNode) audioSourceNode.disconnect(); } catch (_) {}
+        try { if (audioDestination) audioDestination.disconnect(); } catch (_) {}
         try { sourceVideo.pause(); } catch (_) {}
         sourceVideo.removeAttribute('src');
         try { sourceVideo.load(); } catch (_) {}
         sourceVideo.remove();
+        if (exportAudioContext && exportAudioContext.state !== 'closed') {
+          try { await exportAudioContext.close(); } catch (_) {}
+        }
       }
     }
 
     async function saveExportBlob(blob, fileName) {
       const file = new File([blob], fileName, { type: blob.type });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        try {
-          await navigator.share({ title: fileName, files: [file] });
-          return;
-        } catch (error) {
+        try { await navigator.share({ title: fileName, files: [file] }); return; }
+        catch (error) {
           if (error && error.name === 'AbortError') throw new Error("使用者取消儲存");
           console.warn(`分享失敗，改用直接下載: ${safeErrorText(error)}`);
         }
@@ -1659,25 +1745,24 @@
       setTimeout(() => URL.revokeObjectURL(url), 30000);
     }
 
-    async function runExport(startSec, endSec, name, exportOptions) {
+    async function runExport(startSec, endSec, name, exportOptions, exportAudioContext) {
       if (state.isPlaying) togglePlay();
-      timelineOverlayText.textContent = "準備真實影片匯出...";
+      timelineOverlayText.textContent = "準備高品質匯出...";
       timelineOverlay.classList.remove('hidden');
-      try {
-        await exportTimelineRange(startSec, endSec, name, exportOptions);
-      } catch (error) {
+      try { await exportTimelineRange(startSec, endSec, name, exportOptions, exportAudioContext); }
+      catch (error) {
         console.error(`匯出失敗: ${safeErrorText(error)}`);
         showToast(`匯出失敗: ${safeErrorText(error)}`);
       } finally {
         timelineOverlay.classList.add('hidden');
         timelineOverlayText.textContent = "處理中...";
+        preparedExportAudioContext = null;
       }
     }
 
     document.getElementById('btnExportClip').addEventListener('click', () => {
       if (state.selectedClipIdx < 0 || state.selectedClipIdx >= state.clips.length) {
-        showToast("請先在時間軸上選取片段");
-        return;
+        showToast("請先在時間軸上選取片段"); return;
       }
       let start = 0;
       for (let i = 0; i < state.selectedClipIdx; i++) {
@@ -1687,16 +1772,13 @@
       const clip = state.clips[state.selectedClipIdx];
       const duration = (clip.outPoint - clip.inPoint) / (clip.speed || 1);
       const name = clip.name || `Clip ${state.selectedClipIdx + 1}`;
-      requestExportSettings({ startSec: start, endSec: start + duration, name, label: `匯出片段：${name}` });
+      requestExportSettings({ startSec: start, endSec: start + duration, name, label: `高品質匯出片段：${name}` });
     });
 
     document.getElementById('btnExport').addEventListener('click', () => {
       const duration = getTimelineDuration();
-      if (duration <= 0) {
-        showToast("時間軸沒有可匯出的影片");
-        return;
-      }
-      requestExportSettings({ startSec: 0, endSec: duration, name: 'ClipCut Full Timeline', label: '匯出完整時間軸' });
+      if (duration <= 0) { showToast("時間軸沒有可匯出的影片"); return; }
+      requestExportSettings({ startSec: 0, endSec: duration, name: 'ClipCut Full Timeline', label: '高品質匯出完整時間軸' });
     });
 
     // ==============================================================
