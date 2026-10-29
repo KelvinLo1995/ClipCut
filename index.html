@@ -89,7 +89,7 @@
     <div class="flex items-center gap-1.5 flex-shrink-0">
       <i class="ph ph-scissors text-yellow-500 text-xl sm:text-2xl"></i>
       <h1 class="font-bold text-sm sm:text-lg tracking-wide text-gray-100 whitespace-nowrap">ClipCut</h1>
-      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.7</span>
+      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.8</span>
     </div>
     <div class="flex items-center gap-1 sm:gap-3 flex-shrink-0">
       <button id="btnNewProject" class="flex items-center gap-1 text-xs sm:text-sm bg-gray-800 text-gray-300 px-2.5 py-1.5 rounded-full font-medium active:scale-95 transition whitespace-nowrap flex-shrink-0">
@@ -249,7 +249,7 @@
 
       <label class="block text-xs font-semibold text-gray-300 mb-1.5" for="exportResolution">解像度</label>
       <select id="exportResolution" class="w-full bg-[#292524] border border-[#44403c] rounded-xl px-3 py-3 text-sm text-white mb-4 outline-none">
-        <option value="original">Original 原始解像度</option>
+        <option value="original">Original 原始解像度（未修改時無損直出）</option>
         <option value="480">480p</option>
         <option value="720">720p</option>
         <option value="1080" selected>1080p</option>
@@ -258,13 +258,13 @@
 
       <label class="block text-xs font-semibold text-gray-300 mb-1.5" for="exportFps">FPS</label>
       <select id="exportFps" class="w-full bg-[#292524] border border-[#44403c] rounded-xl px-3 py-3 text-sm text-white mb-3 outline-none">
-        <option value="original">Original 原始 FPS</option>
+        <option value="original">Original 原始 FPS（未修改時無損直出）</option>
         <option value="24">24 FPS</option>
         <option value="30" selected>30 FPS</option>
         <option value="60">60 FPS</option>
       </select>
 
-      <p id="exportSettingsHint" class="text-[11px] leading-relaxed text-gray-500 mb-4">高解像度及高 FPS 需要較多記憶體和匯出時間。</p>
+      <p id="exportSettingsHint" class="text-[11px] leading-relaxed text-gray-500 mb-4">Original + Original 且影片未經修改時，會直接輸出原始檔，完整保留音軌、FPS、方向及畫質。</p>
       <div class="flex gap-2">
         <button id="btnCancelExportSettings" class="flex-1 py-3 rounded-xl bg-[#292524] text-gray-300 font-medium active:scale-95 transition">取消</button>
         <button id="btnConfirmExportSettings" class="flex-[1.4] py-3 rounded-xl bg-yellow-500 text-yellow-950 font-bold active:scale-95 transition flex items-center justify-center gap-2">
@@ -1586,6 +1586,55 @@
     let pendingExportRequest = null;
     let preparedExportAudioContext = null;
 
+    function almostEqual(a, b, tolerance = 0.02) {
+      return Math.abs(Number(a) - Number(b)) <= tolerance;
+    }
+
+    function hasProjectLevelChanges() {
+      const hasBackgroundAudio = Boolean(state.bgAudioSrc);
+      const hasSubtitles = Array.isArray(state.subtitles) && state.subtitles.length > 0;
+      return hasBackgroundAudio || hasSubtitles;
+    }
+
+    function getLosslessDirectExport(request, exportOptions) {
+      // Direct-copy is only correct when the user explicitly asks for original
+      // dimensions and FPS. Any conversion request must continue to the encoder.
+      if (!exportOptions || exportOptions.resolution !== 'original' || exportOptions.fps !== 'original') return null;
+      if (hasProjectLevelChanges()) return null;
+
+      const overlapping = buildExportSegments(request.startSec, request.endSec);
+      if (overlapping.length !== 1) return null;
+      const segment = overlapping[0];
+      const clip = state.clips[segment.clipIndex];
+      const media = state.mediaPool[segment.mediaId];
+      if (!clip || !media || !(media.file instanceof Blob)) return null;
+
+      const sourceDuration = Number(media.duration) || Number(media.file.duration) || 0;
+      const requestDuration = request.endSec - request.startSec;
+      const clipTimelineDuration = (clip.outPoint - clip.inPoint) / (clip.speed || 1);
+      const isFullOriginalMedia =
+        almostEqual(clip.inPoint, 0) &&
+        almostEqual(clip.outPoint, sourceDuration) &&
+        almostEqual(clip.speed || 1, 1, 0.0001) &&
+        almostEqual(segment.sourceStart, 0) &&
+        almostEqual(segment.sourceEnd, sourceDuration) &&
+        almostEqual(requestDuration, sourceDuration) &&
+        almostEqual(clipTimelineDuration, sourceDuration);
+
+      if (!isFullOriginalMedia) return null;
+      return { media, file: media.file, fileName: media.file.name || media.name || 'ClipCut Original.mov' };
+    }
+
+    async function exportOriginalFileLosslessly(direct) {
+      const originalFile = direct.file;
+      const originalName = direct.fileName;
+      console.log(`v1.8 無損直出: ${originalName}, ${(originalFile.size / 1048576).toFixed(2)} MB, ${originalFile.type || '原始 MIME'}`);
+      showToast('未偵測到剪輯，正在無損輸出原始檔...');
+      await saveExportBlob(originalFile, originalName);
+      console.log('無損直出完成：音軌、FPS、方向、編碼及 metadata 均保持原檔。');
+      showToast(`無損輸出完成: ${originalName}`);
+    }
+
     function requestExportSettings(request) {
       pendingExportRequest = request;
       document.getElementById('exportSettingsTarget').textContent = request.label;
@@ -1606,17 +1655,28 @@
       localStorage.setItem('clipcut-export-resolution', resolution);
       localStorage.setItem('clipcut-export-fps', fps);
 
-      // Create/resume synchronously in this trusted tap for iOS.
+      const request = pendingExportRequest;
+      const options = { resolution, fps };
+      const directExport = getLosslessDirectExport(request, options);
+      pendingExportRequest = null;
+      document.getElementById('exportSettingsModal').classList.add('hidden');
+
+      if (directExport) {
+        exportOriginalFileLosslessly(directExport).catch((error) => {
+          console.error(`無損直出失敗: ${safeErrorText(error)}`);
+          showToast(`無損直出失敗: ${safeErrorText(error)}`);
+        });
+        return;
+      }
+
+      // Transcoded export still creates/resumes AudioContext synchronously in
+      // this trusted tap so iOS can capture the edited source audio.
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       preparedExportAudioContext = AudioContextClass ? new AudioContextClass() : null;
       if (preparedExportAudioContext && preparedExportAudioContext.state === 'suspended') {
         preparedExportAudioContext.resume().catch(() => {});
       }
-
-      const request = pendingExportRequest;
-      pendingExportRequest = null;
-      document.getElementById('exportSettingsModal').classList.add('hidden');
-      runExport(request.startSec, request.endSec, request.name, { resolution, fps }, preparedExportAudioContext);
+      runExport(request.startSec, request.endSec, request.name, options, preparedExportAudioContext);
     });
 
     async function exportTimelineRange(startSec, endSec, baseName, exportOptions, exportAudioContext) {
