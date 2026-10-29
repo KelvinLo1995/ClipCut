@@ -25,21 +25,52 @@
     .log-expanded { height: 40vh !important; }
     .log-collapsed { height: 40px !important; }
 
-    /* v1.3: iOS must not zoom or pan the whole application. */
-    html, body {
+    /* v1.3.1: lock the app to the visual viewport without widening it. */
+    *, *::before, *::after { box-sizing: border-box; }
+    html {
       width: 100%;
+      height: 100%;
       overflow: hidden;
-      touch-action: none;
       -webkit-text-size-adjust: 100%;
     }
-    button, input, canvas, section, div {
-      touch-action: manipulation;
+    body {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      height: 100dvh;
+      overflow: hidden;
+      overscroll-behavior: none;
     }
+    body > * { min-width: 0; max-width: 100%; }
+    header { width: 100%; max-width: 100%; min-width: 0; overflow: hidden; }
+    header > div { min-width: 0; }
+    header h1 { min-width: 0; }
     #timelineContainer,
     #timelineCanvas {
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
       touch-action: none !important;
       -webkit-user-select: none;
       user-select: none;
+    }
+    button, input { touch-action: manipulation; }
+
+    /* Keep the complete top bar inside narrow iPhone screens. */
+    @media (max-width: 390px) {
+      header { padding-left: 6px !important; padding-right: 6px !important; }
+      header > div:first-child { gap: 4px !important; }
+      header > div:last-child { gap: 2px !important; }
+      #btnNewProject { padding-left: 7px !important; padding-right: 7px !important; }
+      #btnExport { margin-left: 0 !important; padding-left: 9px !important; padding-right: 9px !important; }
+    }
+    @media (max-width: 350px) {
+      header h1 { font-size: 12px !important; }
+      header span { font-size: 8px !important; padding-left: 3px !important; padding-right: 3px !important; }
+      #btnNewProject { font-size: 10px !important; }
+      #btnExport { font-size: 10px !important; }
     }
   </style>
 </head>
@@ -58,7 +89,7 @@
     <div class="flex items-center gap-1.5 flex-shrink-0">
       <i class="ph ph-scissors text-yellow-500 text-xl sm:text-2xl"></i>
       <h1 class="font-bold text-sm sm:text-lg tracking-wide text-gray-100 whitespace-nowrap">ClipCut</h1>
-      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.3</span>
+      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.3.1</span>
     </div>
     <div class="flex items-center gap-1 sm:gap-3 flex-shrink-0">
       <button id="btnNewProject" class="flex items-center gap-1 text-xs sm:text-sm bg-gray-800 text-gray-300 px-2.5 py-1.5 rounded-full font-medium active:scale-95 transition whitespace-nowrap flex-shrink-0">
