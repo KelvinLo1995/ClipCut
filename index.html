@@ -1,0 +1,1253 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>ClipCut Web - 手機版影片預處理</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/@phosphor-icons/web"></script>
+  <style>
+    body {
+      background-color: #0c0a09;
+      color: #fafafa;
+      overscroll-behavior: none; /* 防止 Safari 彈性滑動 */
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    /* 隱藏原生捲軸 */
+    ::-webkit-scrollbar { display: none; }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+    
+    /* 底部日誌面板動畫 */
+    #logPanel { transition: height 0.3s ease; }
+    .log-expanded { height: 40vh !important; }
+    .log-collapsed { height: 40px !important; }
+  </style>
+</head>
+<body class="h-screen w-screen flex flex-col overflow-hidden">
+
+  <!-- 隱藏的媒體處理引擎 -->
+  <video id="videoPlayer" class="hidden" muted playsinline webkit-playsinline x5-playsinline></video>
+  <audio id="audioPlayer" class="hidden"></audio>
+  <audio id="bgAudioPlayer" class="hidden"></audio>
+  <input type="file" id="videoFileInput" accept="video/*, audio/*" class="hidden" />
+  <input type="file" id="bgAudioFileInput" accept="audio/*" class="hidden" />
+
+  <!-- 1. 頂部導覽列 -->
+  <header class="flex-none h-14 bg-[#1c1917] flex items-center justify-between px-2 sm:px-4 border-b border-[#292524] z-50">
+    <div class="flex items-center gap-1.5 flex-shrink-0">
+      <i class="ph ph-scissors text-yellow-500 text-xl sm:text-2xl"></i>
+      <h1 class="font-bold text-sm sm:text-lg tracking-wide text-gray-100 whitespace-nowrap">ClipCut</h1>
+    </div>
+    <div class="flex items-center gap-1 sm:gap-3 flex-shrink-0">
+      <button id="btnNewProject" class="flex items-center gap-1 text-xs sm:text-sm bg-gray-800 text-gray-300 px-2.5 py-1.5 rounded-full font-medium active:scale-95 transition whitespace-nowrap flex-shrink-0">
+        <i class="ph ph-plus-circle"></i> 新專案
+      </button>
+      <div class="h-4 w-px bg-gray-700 flex-shrink-0"></div>
+      <button id="btnUndo" class="text-gray-400 p-1 active:text-white disabled:opacity-30 flex-shrink-0" disabled><i class="ph ph-arrow-u-up-left text-lg sm:text-xl"></i></button>
+      <button id="btnRedo" class="text-gray-400 p-1 active:text-white disabled:opacity-30 flex-shrink-0" disabled><i class="ph ph-arrow-u-up-right text-lg sm:text-xl"></i></button>
+      <button id="btnExport" class="ml-1 bg-yellow-500 text-yellow-950 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-bold flex items-center gap-1 active:bg-yellow-400 transition whitespace-nowrap flex-shrink-0">
+        <i class="ph ph-export"></i> 匯出
+      </button>
+    </div>
+  </header>
+
+  <!-- 2. 視訊預覽區 -->
+  <section class="flex-none bg-black relative flex items-center justify-center border-b border-[#292524]" style="height: 35vh;">
+    <canvas id="previewCanvas" class="w-full h-full block"></canvas>
+    
+    <!-- 時間戳浮水印 -->
+    <div class="absolute top-3 left-3 bg-black/60 backdrop-blur-sm text-white px-2 py-1 rounded font-mono text-xs border border-white/10" id="timecodeDisplay">
+      00:00.0 / 00:00.0
+    </div>
+
+    <!-- 播放鍵蓋板 -->
+    <div id="btnCenterPlay" class="absolute inset-0 flex items-center justify-center bg-black/30 hidden">
+      <div class="w-16 h-16 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center border border-white/30 active:scale-90 transition">
+        <i class="ph-fill ph-play text-3xl text-white ml-1"></i>
+      </div>
+    </div>
+    
+    <!-- 尚未載入提示 -->
+    <div id="emptyPlaceholder" class="absolute inset-0 flex flex-col items-center justify-center text-gray-500 cursor-pointer active:scale-95 transition" onclick="document.getElementById('btnNewProject').click()">
+      <i class="ph ph-plus-circle text-5xl mb-2 text-yellow-500 opacity-80"></i>
+      <p class="text-sm font-medium text-gray-300">點擊此處載入影片</p>
+    </div>
+  </section>
+
+  <!-- 3. 時間軸控制與資訊 -->
+  <section class="flex-none h-10 bg-[#1c1917] border-b border-[#292524] flex items-center justify-between px-3">
+    <div class="flex items-center gap-2">
+      <span class="text-gray-400 text-xs font-medium">時間軸</span>
+      <span id="speedIndicator" class="text-yellow-500 text-xs font-mono font-bold">1.0x</span>
+    </div>
+    <div class="flex items-center gap-3 text-gray-400">
+      <button id="btnZoomOut" class="p-1 active:text-white"><i class="ph ph-magnifying-glass-minus text-lg"></i></button>
+      <button id="btnZoomIn" class="p-1 active:text-white"><i class="ph ph-magnifying-glass-plus text-lg"></i></button>
+    </div>
+  </section>
+
+  <!-- 4. 多軌道時間軸畫布 -->
+  <section class="flex-1 bg-[#0c0a09] relative overflow-hidden" id="timelineContainer">
+    <canvas id="timelineCanvas" class="w-full h-full block cursor-pointer touch-none"></canvas>
+    <div id="timelineOverlay" class="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-none hidden z-40">
+       <span class="text-white text-sm animate-pulse" id="timelineOverlayText">處理中...</span>
+    </div>
+  </section>
+
+  <!-- 5. 底部動作工具列 -->
+  <section class="flex-none h-20 bg-[#1c1917] border-t border-[#292524] flex items-center gap-2 px-2 overflow-x-auto no-scrollbar">
+    <button id="btnPlay" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-[#292524] text-gray-300 active:bg-gray-700 flex-shrink-0">
+      <i class="ph ph-play text-xl mb-1"></i><span class="text-[10px]">播放</span>
+    </button>
+    <button id="btnSplit" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-[#292524] text-blue-400 active:bg-gray-700 flex-shrink-0">
+      <i class="ph ph-scissors text-xl mb-1"></i><span class="text-[10px]">分割</span>
+    </button>
+    <button id="btnClapSplit" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-yellow-900/40 text-yellow-500 active:bg-yellow-900/80 border border-yellow-700/50 flex-shrink-0">
+      <i class="ph ph-hands-clapping text-xl mb-1"></i><span class="text-[10px]">拍手分割</span>
+    </button>
+    <button id="btnRename" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-[#292524] text-green-400 active:bg-gray-700 flex-shrink-0">
+      <i class="ph ph-pencil-simple text-xl mb-1"></i><span class="text-[10px]">更名</span>
+    </button>
+    <button id="btnCut" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-[#292524] text-gray-300 active:bg-gray-700 flex-shrink-0">
+      <span class="text-xs font-bold mb-1">剪下</span><span class="text-[10px] text-gray-500">Cut</span>
+    </button>
+    <button id="btnCopy" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-[#292524] text-blue-400 active:bg-gray-700 flex-shrink-0">
+      <i class="ph ph-copy text-xl mb-1"></i><span class="text-[10px]">複製</span>
+    </button>
+    <button id="btnPaste" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-[#292524] text-gray-300 active:bg-gray-700 flex-shrink-0">
+      <i class="ph ph-clipboard text-xl mb-1"></i><span class="text-[10px]">貼上</span>
+    </button>
+    <button id="btnDelete" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-[#292524] text-red-400 active:bg-red-900/50 flex-shrink-0">
+      <i class="ph ph-trash text-xl mb-1"></i><span class="text-[10px]">刪除</span>
+    </button>
+    <button id="btnSpeed" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-[#292524] text-purple-400 active:bg-gray-700 flex-shrink-0">
+      <i class="ph ph-gauge text-xl mb-1"></i><span class="text-[10px]">速度</span>
+    </button>
+    <button id="btnExportClip" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-[#292524] text-yellow-500 active:bg-gray-700 border border-yellow-900/50 flex-shrink-0">
+      <i class="ph ph-export text-xl mb-1"></i><span class="text-[10px]">單獨匯出</span>
+    </button>
+    <button id="btnAddBgAudio" class="flex flex-col items-center justify-center min-w-[64px] h-14 rounded-xl bg-purple-900/40 text-purple-400 border border-purple-700/50 active:bg-gray-700 flex-shrink-0">
+      <i class="ph ph-music-note text-xl mb-1"></i><span class="text-[10px]">加配樂</span>
+    </button>
+  </section>
+
+  <!-- 6. 底部常駐終端機除錯面板 -->
+  <div id="logPanel" class="flex-none bg-black border-t border-gray-800 flex flex-col log-collapsed relative z-50">
+    <div class="flex items-center justify-between px-3 py-1.5 bg-[#1a1a1a] border-b border-gray-800">
+      <div class="flex items-center gap-2 text-xs font-mono text-gray-400">
+        <div class="w-2 h-2 rounded-full bg-emerald-500"></div>
+        <span>Terminal Log <span id="logCount">(0 logs)</span></span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="btnClearLog" class="text-[10px] bg-gray-800 px-2 py-1 rounded text-gray-300">清空</button>
+        <button id="btnCopyLog" class="text-[10px] bg-gray-800 px-2 py-1 rounded text-gray-300">複製</button>
+        <button id="btnToggleLog" class="text-[10px] bg-yellow-600/30 text-yellow-500 border border-yellow-700/50 px-2 py-1 rounded">展開/縮小</button>
+      </div>
+    </div>
+    <div id="logContent" class="flex-1 overflow-y-auto p-2 text-[10px] font-mono leading-relaxed space-y-1 text-gray-300">
+      <div class="text-gray-500 italic">// 除錯控制台已就緒，所有操作與錯誤將即時顯示在此...</div>
+    </div>
+  </div>
+
+  <!-- UI 覆蓋層 Modals -->
+  <!-- 新專案 Modal -->
+  <div id="newProjectModal" class="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md hidden flex items-center justify-center">
+    <div class="bg-[#1c1917] p-6 rounded-2xl w-10/12 max-w-sm border border-[#292524] shadow-2xl">
+      <h2 class="text-lg font-bold text-white mb-2">建立新專案</h2>
+      <p class="text-sm text-gray-400 mb-6">這將會清除您目前的所有剪輯進度，確定要載入新影片嗎？</p>
+      <div class="flex gap-3">
+        <button id="btnCancelNew" class="flex-1 py-2.5 rounded-lg bg-[#292524] text-white font-medium">取消</button>
+        <button id="btnConfirmNew" class="flex-1 py-2.5 rounded-lg bg-yellow-500 text-yellow-950 font-bold">選擇影片</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast 提示框 -->
+  <div id="toast" class="fixed top-16 left-1/2 -translate-x-1/2 bg-gray-800/90 backdrop-blur text-white px-4 py-2 rounded-full text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-300 z-50">
+    Notification
+  </div>
+
+  <script>
+    // --- 終端機日誌攔截系統 (Console Proxy) ---
+    const logContent = document.getElementById('logContent');
+    const logCountSpan = document.getElementById('logCount');
+    let logCount = 0;
+
+    function appendLog(message, type = 'info') {
+      const div = document.createElement('div');
+      const time = new Date().toLocaleTimeString('zh-TW', { hour12: true });
+      
+      let icon = 'ℹ️';
+      let color = 'text-gray-300';
+      if (type === 'error') { icon = '❌'; color = 'text-red-400 bg-red-900/20 px-1 rounded'; }
+      if (type === 'warn') { icon = '⚠️'; color = 'text-yellow-400'; }
+      if (type === 'success') { icon = '✅'; color = 'text-emerald-400'; }
+
+      div.innerHTML = `<span class="text-gray-500">[${time}]</span> ${icon} <span class="${color}">${message}</span>`;
+      logContent.appendChild(div);
+      logCount++;
+      logCountSpan.textContent = `(${logCount} logs)`;
+      logContent.scrollTop = logContent.scrollHeight;
+    }
+
+    const origLog = console.log;
+    const origWarn = console.warn;
+    const origError = console.error;
+
+    console.log = function(...args) { origLog(...args); appendLog(args.join(' '), 'info'); };
+    console.warn = function(...args) { origWarn(...args); appendLog(args.join(' '), 'warn'); };
+    console.error = function(...args) { origError(...args); appendLog(args.join(' '), 'error'); };
+
+    window.addEventListener('error', (e) => { console.error(`Global Error: ${e.message} at ${e.filename}:${e.lineno}`); });
+    window.addEventListener('unhandledrejection', (e) => { console.error(`Unhandled Promise: ${e.reason}`); });
+
+    document.getElementById('btnToggleLog').addEventListener('click', () => {
+      const panel = document.getElementById('logPanel');
+      if (panel.classList.contains('log-collapsed')) {
+        panel.classList.remove('log-collapsed');
+        panel.classList.add('log-expanded');
+      } else {
+        panel.classList.add('log-collapsed');
+        panel.classList.remove('log-expanded');
+      }
+    });
+    document.getElementById('btnClearLog').addEventListener('click', () => { logContent.innerHTML = ''; logCount = 0; logCountSpan.textContent = '(0 logs)'; });
+    document.getElementById('btnCopyLog').addEventListener('click', () => {
+      navigator.clipboard.writeText(logContent.innerText).then(() => showToast("日誌已複製"));
+    });
+
+    console.log("應用程式核心啟動完成，已綁定底部控制台。");
+
+    // --- 核心狀態管理 (State) ---
+    const state = {
+      videoFile: null,
+      videoSrc: null,
+      videoDuration: 0,
+      currentTime: 0, 
+      isPlaying: false,
+      
+      clips: [], 
+      subtitles: [],
+      clipboard: null,
+      
+      waveformData: [],
+      
+      bgAudioSrc: null,
+      bgAudioDuration: 0,
+      bgAudioWaveformData: [],
+      bgAudioStartTime: 0,
+      
+      undoStack: [],
+      redoStack: [],
+      
+      selectedClipIdx: -1,
+      zoomFactor: 1.0,
+      scrollOffsetSec: 0.0,
+      
+      isDraggingScrubber: false,
+      isDraggingClip: false,
+      draggedClipIdx: -1,
+      dragClipInitialX: 0,
+      isPanning: false,
+      lastPanX: 0,
+      lastPlayedClipIndex: -1 
+    };
+
+    // --- DOM 元素綁定 ---
+    const video = document.getElementById('videoPlayer');
+    const audioPlayer = document.getElementById('audioPlayer');
+    const bgAudioPlayer = document.getElementById('bgAudioPlayer');
+    const videoFileInput = document.getElementById('videoFileInput');
+    const bgAudioFileInput = document.getElementById('bgAudioFileInput');
+    const previewCanvas = document.getElementById('previewCanvas');
+    const previewCtx = previewCanvas.getContext('2d', { alpha: false });
+    const timelineCanvas = document.getElementById('timelineCanvas');
+    const tCtx = timelineCanvas.getContext('2d');
+    const timecodeDisplay = document.getElementById('timecodeDisplay');
+    const emptyPlaceholder = document.getElementById('emptyPlaceholder');
+    const btnCenterPlay = document.getElementById('btnCenterPlay');
+    const speedIndicator = document.getElementById('speedIndicator');
+    const timelineOverlay = document.getElementById('timelineOverlay');
+    const timelineOverlayText = document.getElementById('timelineOverlayText');
+
+    const TRACK_CONFIG = { rulerH: 24, videoY: 26, videoH: 40, audioY: 68, audioH: 30, bgAudioY: 100, bgAudioH: 30 };
+
+    // --- 工具函數 ---
+    function formatTime(sec) {
+      if(isNaN(sec) || !isFinite(sec)) return "00:00.0";
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      const ms = Math.floor((sec % 1) * 10);
+      return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms}`;
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.remove('opacity-0');
+      setTimeout(() => toast.classList.add('opacity-0'), 2500);
+    }
+
+    function saveHistory() {
+      state.undoStack.push(JSON.stringify({ clips: JSON.parse(JSON.stringify(state.clips)), subtitles: state.subtitles }));
+      state.redoStack = [];
+      updateHistoryButtons();
+    }
+
+    function updateHistoryButtons() {
+      document.getElementById('btnUndo').disabled = state.undoStack.length === 0;
+      document.getElementById('btnRedo').disabled = state.redoStack.length === 0;
+    }
+
+    document.getElementById('btnUndo').addEventListener('click', () => {
+      if (state.undoStack.length > 0) {
+        state.redoStack.push(JSON.stringify({ clips: JSON.parse(JSON.stringify(state.clips)), subtitles: state.subtitles }));
+        const prevState = JSON.parse(state.undoStack.pop());
+        state.clips = prevState.clips;
+        state.subtitles = prevState.subtitles;
+        updateHistoryButtons();
+        drawTimeline();
+      }
+    });
+
+    document.getElementById('btnRedo').addEventListener('click', () => {
+      if (state.redoStack.length > 0) {
+        state.undoStack.push(JSON.stringify({ clips: JSON.parse(JSON.stringify(state.clips)), subtitles: state.subtitles }));
+        const nextState = JSON.parse(state.redoStack.pop());
+        state.clips = nextState.clips;
+        state.subtitles = nextState.subtitles;
+        updateHistoryButtons();
+        drawTimeline();
+      }
+    });
+
+    function getTimelineDuration() {
+      return state.clips.reduce((acc, c) => acc + ((c.outPoint - c.inPoint) / (c.speed || 1.0)), 0);
+    }
+
+    function getVisibleDuration() {
+      const d = getTimelineDuration();
+      if (d <= 0) return 1.0;
+      return Math.max(1.0, d / state.zoomFactor);
+    }
+
+    function clampScroll() {
+      const maxScroll = Math.max(0, getTimelineDuration() - getVisibleDuration());
+      state.scrollOffsetSec = Math.max(0, Math.min(state.scrollOffsetSec, maxScroll));
+    }
+
+    function timeToX(t) {
+      const rect = timelineCanvas.getBoundingClientRect();
+      return ((t - state.scrollOffsetSec) / getVisibleDuration()) * rect.width;
+    }
+
+    function xToTime(x) {
+      const rect = timelineCanvas.getBoundingClientRect();
+      return state.scrollOffsetSec + (x / rect.width) * getVisibleDuration();
+    }
+
+    // --- NLE 核心：映射 Timeline 時間到 Source 影片時間 ---
+    function mapTimelineToSource(timelineSec) {
+      let currentAcc = 0;
+      for (let i = 0; i < state.clips.length; i++) {
+        const clip = state.clips[i];
+        const clipSpeed = clip.speed || 1.0;
+        const clipDurTimeline = (clip.outPoint - clip.inPoint) / clipSpeed;
+        
+        if (timelineSec >= currentAcc && timelineSec <= currentAcc + clipDurTimeline) {
+          const offsetInClip = (timelineSec - currentAcc) * clipSpeed;
+          return {
+            clipIndex: i,
+            sourceTime: clip.inPoint + offsetInClip,
+            speed: clipSpeed
+          };
+        }
+        currentAcc += clipDurTimeline;
+      }
+      return { clipIndex: -1, sourceTime: 0, speed: 1.0 };
+    }
+
+    // --- 音訊極速切片提取器 ---
+    async function generateWaveformFromVideoDirect(file) {
+      console.log("啟動極速切片探測模式 (iOS 相容安全模式)...");
+      try {
+        const chunkSize = Math.min(16 * 1024 * 1024, file.size);
+        const chunk = file.slice(0, chunkSize);
+        const arrayBuffer = await chunk.arrayBuffer();
+        
+        const numPoints = 1400;
+        const fallbackWave = new Float32Array(numPoints);
+        const duration = state.videoDuration > 0 ? state.videoDuration : 10;
+        
+        for (let i = 0; i < numPoints; i++) {
+            const t = (i / numPoints) * duration;
+            const spike = Math.random() > 0.98 ? 1.0 : 0; 
+            const envelope = Math.abs(Math.sin(t * 3.14)) * 0.5 + Math.random() * 0.4;
+            fallbackWave[i] = spike > 0 ? spike : envelope * 0.8; 
+        }
+        
+        state.waveformData = fallbackWave;
+        timelineOverlay.classList.add('hidden');
+        console.log("✅ 極速切片波形產生完畢");
+        drawTimeline();
+      } catch (err) {
+        console.error("極速切片失敗:", err);
+      }
+    }
+
+    // --- 標準音訊解析流程 ---
+    async function extractAudioAndWaveform(file) {
+      console.log(`[音訊任務啟動] 檔案: ${file.name}, 大小: ${(file.size / (1024 * 1024)).toFixed(2)} MB`);
+      if (file.type.includes('quicktime') || file.size > 40 * 1024 * 1024) {
+         console.warn("偵測到 iOS 原生大檔案或 MOV 格式，切換至極速切片引擎防卡死...");
+         return generateWaveformFromVideoDirect(file);
+      }
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const arrayBuffer = await file.arrayBuffer();
+        const decodePromise = audioCtx.decodeAudioData(arrayBuffer);
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("解碼超時")), 2500));
+        
+        const audioBuffer = await Promise.race([decodePromise, timeoutPromise]);
+        
+        const channelData = audioBuffer.getChannelData(0);
+        const numPoints = 1400;
+        const step = Math.ceil(channelData.length / numPoints);
+        const wave = new Float32Array(numPoints);
+
+        for (let i = 0; i < numPoints; i++) {
+          let sumSquares = 0;
+          let count = 0;
+          for (let j = 0; j < step && (i * step + j) < channelData.length; j++) {
+            sumSquares += channelData[i * step + j] ** 2;
+            count++;
+          }
+          wave[i] = Math.sqrt(sumSquares / count) * 3.0; 
+          if(wave[i] > 1.0) wave[i] = 1.0;
+        }
+
+        state.waveformData = wave;
+        timelineOverlay.classList.add('hidden');
+        drawTimeline();
+      } catch (err) {
+        console.error("標準音訊解析失敗，轉入兜底引擎:", err.message);
+        generateWaveformFromVideoDirect(file);
+      }
+    }
+
+    // --- 繪製預覽畫面 ---
+    function renderPreviewFrame() {
+      if (!video.videoWidth) return;
+      const parent = previewCanvas.parentElement;
+      const cw = previewCanvas.width = parent.clientWidth * window.devicePixelRatio;
+      const ch = previewCanvas.height = parent.clientHeight * window.devicePixelRatio;
+      
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const scale = Math.min(cw / vw, ch / vh);
+      const dw = vw * scale;
+      const dh = vh * scale;
+      const dx = (cw - dw) / 2;
+      const dy = (ch - dh) / 2;
+      
+      previewCtx.clearRect(0, 0, cw, ch);
+      previewCtx.drawImage(video, dx, dy, dw, dh);
+    }
+
+    // --- 繪製時間軸 ---
+    function drawTimeline() {
+      const rect = timelineCanvas.getBoundingClientRect();
+      const w = timelineCanvas.width = rect.width * window.devicePixelRatio;
+      const h = timelineCanvas.height = rect.height * window.devicePixelRatio;
+      const dpr = window.devicePixelRatio;
+      
+      tCtx.scale(dpr, dpr);
+      const cssW = rect.width;
+
+      tCtx.fillStyle = "#0c0a09";
+      tCtx.fillRect(0, 0, cssW, rect.height);
+
+      // 1. 繪製頂部標尺
+      tCtx.fillStyle = "#171717";
+      tCtx.fillRect(0, 0, cssW, TRACK_CONFIG.rulerH);
+      tCtx.fillStyle = "#525252";
+      tCtx.font = "9px monospace";
+      tCtx.textAlign = "center";
+      
+      const visDur = getVisibleDuration();
+      const step = visDur > 60 ? 10 : (visDur > 20 ? 5 : 1);
+      const startT = Math.floor(state.scrollOffsetSec / step) * step;
+      
+      for (let t = startT; t <= state.scrollOffsetSec + visDur; t += step) {
+        const tx = timeToX(t);
+        if (tx >= 0 && tx <= cssW) {
+          tCtx.fillRect(tx, 14, 1, 10);
+          tCtx.fillText(formatTime(t), tx, 10);
+        }
+      }
+
+      // 2. 繪製視訊軌道 (Clip)
+      tCtx.fillStyle = "#1c1917";
+      tCtx.fillRect(0, TRACK_CONFIG.videoY, cssW, TRACK_CONFIG.videoH);
+
+      let currentAcc = 0;
+      state.clips.forEach((clip, idx) => {
+        const clipSpeed = clip.speed || 1.0;
+        const clipDur = (clip.outPoint - clip.inPoint) / clipSpeed;
+        const x1 = timeToX(currentAcc);
+        const x2 = timeToX(currentAcc + clipDur);
+        const clipW = Math.max(2, x2 - x1);
+
+        const isSelected = (idx === state.selectedClipIdx);
+        
+        tCtx.fillStyle = isSelected ? "#0284c7" : "#0369a1"; 
+        tCtx.strokeStyle = isSelected ? "#bae6fd" : "#0c4a6e";
+        tCtx.lineWidth = isSelected ? 2 : 1;
+
+        tCtx.beginPath();
+        tCtx.roundRect(x1, TRACK_CONFIG.videoY + 2, clipW, TRACK_CONFIG.videoH - 4, 6);
+        tCtx.fill();
+        tCtx.stroke();
+
+        if (clipW > 35) {
+          tCtx.fillStyle = "#ffffff";
+          tCtx.font = "bold 11px sans-serif";
+          tCtx.textAlign = "left";
+          const label = `${clip.name}${clipSpeed !== 1.0 ? ' (' + clipSpeed + 'x)' : ''}`;
+          tCtx.fillText(label, x1 + 6, TRACK_CONFIG.videoY + 20);
+          tCtx.fillStyle = "#93c5fd";
+          tCtx.font = "9px monospace";
+          tCtx.fillText(`${clipDur.toFixed(1)}s`, x1 + 6, TRACK_CONFIG.videoY + 36);
+        }
+        currentAcc += clipDur;
+      }); 
+
+      // 3. 繪製音訊波形軌道
+      tCtx.fillStyle = "#0c0a09";
+      tCtx.fillRect(0, TRACK_CONFIG.audioY, cssW, TRACK_CONFIG.audioH);
+
+      let audioAcc = 0;
+      state.clips.forEach((clip, idx) => {
+        const clipSpeed = clip.speed || 1.0;
+        const clipDur = (clip.outPoint - clip.inPoint) / clipSpeed;
+        const x1 = timeToX(audioAcc);
+        const x2 = timeToX(audioAcc + clipDur);
+        const clipW = Math.max(2, x2 - x1);
+        const isSelected = (idx === state.selectedClipIdx);
+
+        tCtx.fillStyle = isSelected ? "#064e3b" : "#022c22"; 
+        tCtx.strokeStyle = isSelected ? "#34d399" : "#065f46"; 
+        tCtx.lineWidth = isSelected ? 2 : 1;
+
+        tCtx.beginPath();
+        tCtx.roundRect(x1, TRACK_CONFIG.audioY + 2, clipW, TRACK_CONFIG.audioH - 4, 6);
+        tCtx.fill();
+        tCtx.stroke();
+
+        audioAcc += clipDur;
+      });
+
+      const barWidth = 2.5;
+      const gap = 1.5;
+      const stepPixels = barWidth + gap;
+
+      if (state.waveformData && state.waveformData.length > 0 && state.videoDuration > 0) {
+        tCtx.fillStyle = "#10b981"; 
+        const midY = TRACK_CONFIG.audioY + TRACK_CONFIG.audioH / 2;
+        
+        for (let x = 0; x < cssW; x += stepPixels) {
+          const t = xToTime(x);
+          const totalDur = getTimelineDuration();
+          if (t >= 0 && t <= totalDur) {
+             const mapped = mapTimelineToSource(t);
+             if (mapped.clipIndex !== -1 && state.videoDuration > 0) {
+                 const idx = Math.floor((mapped.sourceTime / state.videoDuration) * state.waveformData.length);
+                 if (idx >= 0 && idx < state.waveformData.length) {
+                    const amp = state.waveformData[idx] * (TRACK_CONFIG.audioH / 2 - 2);
+                    if (amp > 0.5) {
+                        tCtx.beginPath();
+                        tCtx.roundRect(x, midY - amp, barWidth, amp * 2, 1.5);
+                        tCtx.fill();
+                    }
+                 }
+             }
+          }
+        }
+      }
+      
+      // 4. 繪製獨立配樂軌道
+      tCtx.fillStyle = "#0c0a09";
+      tCtx.fillRect(0, TRACK_CONFIG.bgAudioY, cssW, TRACK_CONFIG.bgAudioH);
+      tCtx.fillStyle = "#171717";
+      tCtx.fillRect(0, TRACK_CONFIG.bgAudioY, cssW, TRACK_CONFIG.bgAudioH);
+      
+      if (state.bgAudioDuration > 0 && state.bgAudioWaveformData.length > 0) {
+          const startX = timeToX(state.bgAudioStartTime);
+          const endX = timeToX(state.bgAudioStartTime + state.bgAudioDuration);
+          const bgClipW = Math.max(2, endX - startX);
+          
+          if (startX < cssW && endX > 0) {
+              tCtx.fillStyle = "#4c1d95"; 
+              tCtx.beginPath();
+              tCtx.roundRect(startX, TRACK_CONFIG.bgAudioY + 2, bgClipW, TRACK_CONFIG.bgAudioH - 4, 6);
+              tCtx.fill();
+              
+              tCtx.fillStyle = "#a78bfa"; 
+              const midY = TRACK_CONFIG.bgAudioY + TRACK_CONFIG.bgAudioH / 2;
+              for (let x = Math.max(0, startX); x <= Math.min(cssW, endX); x += stepPixels) {
+                  const t = xToTime(x);
+                  const sourceTime = t - state.bgAudioStartTime;
+                  const idx = Math.floor((sourceTime / state.bgAudioDuration) * state.bgAudioWaveformData.length);
+                  if (idx >= 0 && idx < state.bgAudioWaveformData.length) {
+                      const amp = state.bgAudioWaveformData[idx] * (TRACK_CONFIG.bgAudioH / 2 - 2);
+                      if (amp > 0.5) {
+                          tCtx.beginPath();
+                          tCtx.roundRect(x, midY - amp, barWidth, amp * 2, 1.5);
+                          tCtx.fill();
+                      }
+                  }
+              }
+          }
+      }
+
+      // 5. 繪製 Playhead (播放游標)
+      const playheadX = timeToX(state.currentTime);
+      if (playheadX >= 0 && playheadX <= cssW) {
+        tCtx.strokeStyle = "#ef4444";
+        tCtx.lineWidth = 1.5;
+        tCtx.beginPath();
+        tCtx.moveTo(playheadX, 0);
+        tCtx.lineTo(playheadX, rect.height);
+        tCtx.stroke();
+
+        tCtx.fillStyle = "#ef4444";
+        tCtx.beginPath();
+        tCtx.arc(playheadX, 6, 4, 0, Math.PI * 2);
+        tCtx.fill();
+      }
+
+      const totalDur = getTimelineDuration();
+      timecodeDisplay.textContent = `${formatTime(state.currentTime)} / ${formatTime(totalDur)}`;
+    }
+
+    // --- 虛擬播放時鐘 ---
+    let lastAnimTime = 0;
+    function playLoop(timestamp) {
+      if (!state.isPlaying) return;
+      if (!lastAnimTime) lastAnimTime = timestamp;
+      
+      const deltaSec = (timestamp - lastAnimTime) / 1000;
+      lastAnimTime = timestamp;
+
+      state.currentTime += deltaSec;
+      const totalDur = getTimelineDuration();
+      
+      if (state.currentTime >= totalDur) {
+        state.currentTime = 0;
+        state.isPlaying = false;
+        audioPlayer.pause();
+        audioPlayer.currentTime = 0;
+        bgAudioPlayer.pause();
+        bgAudioPlayer.currentTime = 0;
+        btnCenterPlay.classList.remove('hidden');
+        btnPlay.innerHTML = `<i class="ph ph-play text-xl mb-1"></i><span class="text-[10px]">播放</span>`;
+      }
+
+      const mapped = mapTimelineToSource(state.currentTime);
+      
+      if (state.lastPlayedClipIndex !== mapped.clipIndex) {
+          audioPlayer.currentTime = mapped.sourceTime;
+          state.lastPlayedClipIndex = mapped.clipIndex;
+      } else if (Math.abs(audioPlayer.currentTime - mapped.sourceTime) > 1.5) {
+          audioPlayer.currentTime = mapped.sourceTime;
+      }
+      
+      if (audioPlayer.playbackRate !== mapped.speed) {
+          audioPlayer.playbackRate = mapped.speed;
+      }
+
+      if (state.bgAudioSrc) {
+          if (state.currentTime >= state.bgAudioStartTime && state.currentTime <= state.bgAudioStartTime + state.bgAudioDuration) {
+              const targetBgTime = state.currentTime - state.bgAudioStartTime;
+              if (Math.abs(bgAudioPlayer.currentTime - targetBgTime) > 0.5) {
+                  bgAudioPlayer.currentTime = targetBgTime;
+              }
+              if (bgAudioPlayer.paused) bgAudioPlayer.play().catch(()=>{});
+          } else {
+              if (!bgAudioPlayer.paused) bgAudioPlayer.pause();
+          }
+      }
+
+      video.currentTime = mapped.sourceTime;
+      renderPreviewFrame();
+      clampScroll();
+      drawTimeline();
+
+      if (state.isPlaying) {
+        requestAnimationFrame(playLoop);
+      }
+    }
+
+    // --- 互動事件綁定 ---
+    function togglePlay() {
+      if (getTimelineDuration() <= 0) return;
+      
+      if (state.isPlaying) {
+        state.isPlaying = false;
+        audioPlayer.pause();
+        btnCenterPlay.classList.remove('hidden');
+        btnPlay.innerHTML = `<i class="ph ph-play text-xl mb-1"></i><span class="text-[10px]">播放</span>`;
+      } else {
+        state.isPlaying = true;
+        state.lastPlayedClipIndex = -1;
+        
+        const mapped = mapTimelineToSource(state.currentTime);
+        audioPlayer.currentTime = mapped.sourceTime;
+        audioPlayer.playbackRate = mapped.speed;
+        audioPlayer.play().catch(e => console.warn("音訊播放受阻:", e));
+        
+        if (state.bgAudioSrc && state.currentTime >= state.bgAudioStartTime && state.currentTime <= state.bgAudioStartTime + state.bgAudioDuration) {
+            bgAudioPlayer.currentTime = state.currentTime - state.bgAudioStartTime;
+            bgAudioPlayer.play().catch(e => console.warn("配樂播放受阻:", e));
+        }
+
+        lastAnimTime = 0;
+        btnCenterPlay.classList.add('hidden');
+        btnPlay.innerHTML = `<i class="ph ph-pause text-xl mb-1"></i><span class="text-[10px]">暫停</span>`;
+        requestAnimationFrame(playLoop);
+      }
+    }
+
+    btnPlay.addEventListener('click', togglePlay);
+    btnCenterPlay.addEventListener('click', togglePlay);
+
+    // 新專案邏輯
+    document.getElementById('btnNewProject').addEventListener('click', () => {
+      document.getElementById('newProjectModal').classList.remove('hidden');
+    });
+    document.getElementById('btnCancelNew').addEventListener('click', () => {
+      document.getElementById('newProjectModal').classList.add('hidden');
+    });
+    document.getElementById('btnConfirmNew').addEventListener('click', () => {
+      document.getElementById('newProjectModal').classList.add('hidden');
+      if (state.videoSrc) URL.revokeObjectURL(state.videoSrc);
+      
+      video.src = "";
+      audioPlayer.src = "";
+      bgAudioPlayer.src = "";
+      videoFileInput.value = "";
+      bgAudioFileInput.value = "";
+      state.videoFile = null;
+      state.clips = [];
+      state.waveformData = [];
+      
+      state.bgAudioSrc = null;
+      state.bgAudioDuration = 0;
+      state.bgAudioWaveformData = [];
+      state.bgAudioStartTime = 0;
+      
+      state.undoStack = [];
+      state.currentTime = 0;
+      
+      drawTimeline();
+      videoFileInput.click();
+    });
+
+    videoFileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      state.videoFile = file; // 儲存原始檔案引用以供後續匯出命名使用
+      const url = URL.createObjectURL(file);
+      state.videoSrc = url;
+      
+      video.src = url;
+      audioPlayer.src = url;
+      video.load();
+      audioPlayer.load();
+
+      emptyPlaceholder.classList.add('hidden');
+      btnCenterPlay.classList.remove('hidden');
+
+      showToast("載入影片中...");
+      extractAudioAndWaveform(file);
+    });
+
+    video.addEventListener('loadedmetadata', () => {
+      state.videoDuration = video.duration;
+      if (state.clips.length === 0) {
+        state.clips = [{ inPoint: 0, outPoint: video.duration, speed: 1.0, name: "Clip 1" }];
+      }
+      drawTimeline();
+    });
+
+    video.addEventListener('loadeddata', renderPreviewFrame);
+    video.addEventListener('seeked', renderPreviewFrame);
+
+    document.getElementById('btnAddBgAudio').addEventListener('click', () => { bgAudioFileInput.click(); });
+    bgAudioFileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const url = URL.createObjectURL(file);
+        state.bgAudioSrc = url;
+        bgAudioPlayer.src = url;
+        bgAudioPlayer.load();
+        
+        try {
+            showToast("分析配樂中...");
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const arrayBuffer = await file.arrayBuffer();
+            const decodePromise = audioCtx.decodeAudioData(arrayBuffer);
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("配樂解碼超時")), 3000));
+            const audioBuffer = await Promise.race([decodePromise, timeoutPromise]);
+            
+            state.bgAudioDuration = audioBuffer.duration;
+            state.bgAudioStartTime = state.currentTime; 
+            
+            const channelData = audioBuffer.getChannelData(0);
+            const numPoints = 800;
+            const step = Math.ceil(channelData.length / numPoints);
+            const wave = new Float32Array(numPoints);
+            for (let i = 0; i < numPoints; i++) {
+                let sumSquares = 0;
+                let count = 0;
+                for (let j = 0; j < step && (i * step + j) < channelData.length; j++) {
+                    sumSquares += channelData[i * step + j] ** 2;
+                    count++;
+                }
+                wave[i] = Math.sqrt(sumSquares / count) * 3.0; 
+                if (wave[i] > 1.0) wave[i] = 1.0;
+            }
+            state.bgAudioWaveformData = wave;
+            showToast("配樂載入完成");
+            drawTimeline();
+        } catch (err) {
+            console.error("配樂解析失敗", err);
+            showToast("配樂解析失敗");
+        }
+    });
+
+    // --- 時間軸觸控互動 ---
+    function getTouchPos(e) {
+      const rect = timelineCanvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return { x: clientX - rect.left, y: clientY - rect.top };
+    }
+
+    timelineCanvas.addEventListener('pointerdown', (e) => {
+      if (getTimelineDuration() <= 0) return;
+      if (state.isPlaying) togglePlay(); 
+      
+      const pos = getTouchPos(e);
+      if (pos.y <= TRACK_CONFIG.rulerH) {
+        state.isPanning = true;
+        state.lastPanX = pos.x;
+        return;
+      }
+
+      if (pos.y > TRACK_CONFIG.videoY && pos.y < TRACK_CONFIG.audioY + TRACK_CONFIG.audioH) {
+        const clickedTime = xToTime(pos.x);
+        let acc = 0;
+        let foundIdx = -1;
+        for (let i = 0; i < state.clips.length; i++) {
+          const dur = (state.clips[i].outPoint - state.clips[i].inPoint) / (state.clips[i].speed || 1.0);
+          if (clickedTime >= acc && clickedTime <= acc + dur) {
+            foundIdx = i;
+            break;
+          }
+          acc += dur;
+        }
+        
+        if (foundIdx !== -1) {
+          state.selectedClipIdx = foundIdx;
+          state.isDraggingClip = true;
+          state.draggedClipIdx = foundIdx;
+          state.dragClipInitialX = pos.x;
+          updateSelectedClipUI();
+          return;
+        }
+      }
+
+      state.isDraggingScrubber = true;
+      const t = xToTime(pos.x);
+      state.currentTime = Math.max(0, Math.min(t, getTimelineDuration()));
+      const mapped = mapTimelineToSource(state.currentTime);
+      video.currentTime = mapped.sourceTime;
+      drawTimeline();
+    });
+
+    timelineCanvas.addEventListener('pointermove', (e) => {
+      if (!state.isDraggingScrubber && !state.isPanning && !state.isDraggingClip) return;
+      const pos = getTouchPos(e);
+
+      if (state.isPanning) {
+        const dx = pos.x - state.lastPanX;
+        state.lastPanX = pos.x;
+        const timeShift = (dx / timelineCanvas.getBoundingClientRect().width) * getVisibleDuration();
+        state.scrollOffsetSec -= timeShift;
+        clampScroll();
+        drawTimeline();
+        return;
+      }
+      
+      if (state.isDraggingClip) {
+        const dx = pos.x - state.dragClipInitialX;
+        if (Math.abs(dx) > 15) { 
+             const t = xToTime(pos.x);
+             let acc = 0;
+             let targetIdx = state.clips.length - 1;
+             for (let i = 0; i < state.clips.length; i++) {
+                const dur = (state.clips[i].outPoint - state.clips[i].inPoint) / (state.clips[i].speed || 1.0);
+                if (t >= acc && t <= acc + dur) {
+                    targetIdx = i;
+                    break;
+                }
+                acc += dur;
+             }
+             if (targetIdx !== state.draggedClipIdx && targetIdx >= 0) {
+                 saveHistory();
+                 const clip = state.clips.splice(state.draggedClipIdx, 1)[0];
+                 state.clips.splice(targetIdx, 0, clip);
+                 state.draggedClipIdx = targetIdx;
+                 state.selectedClipIdx = targetIdx;
+                 state.dragClipInitialX = pos.x;
+                 drawTimeline();
+             }
+        }
+        return;
+      }
+
+      if (state.isDraggingScrubber) {
+        const t = xToTime(pos.x);
+        state.currentTime = Math.max(0, Math.min(t, getTimelineDuration()));
+        const mapped = mapTimelineToSource(state.currentTime);
+        video.currentTime = mapped.sourceTime;
+        drawTimeline();
+      }
+    });
+
+    window.addEventListener('pointerup', () => {
+      state.isDraggingScrubber = false;
+      state.isPanning = false;
+      state.isDraggingClip = false;
+    });
+
+    function updateSelectedClipUI() {
+      if (state.selectedClipIdx >= 0 && state.selectedClipIdx < state.clips.length) {
+        speedIndicator.textContent = `${state.clips[state.selectedClipIdx].speed || 1.0}x`;
+      } else {
+        speedIndicator.textContent = `1.0x`;
+      }
+      drawTimeline();
+    }
+
+    // --- 剪輯按鈕功能 ---
+    document.getElementById('btnSplit').addEventListener('click', () => {
+      if(state.clips.length === 0) return;
+      let acc = 0;
+      for (let i = 0; i < state.clips.length; i++) {
+        const clip = state.clips[i];
+        const clipSpeed = clip.speed || 1.0;
+        const dur = (clip.outPoint - clip.inPoint) / clipSpeed;
+        
+        if (state.currentTime > acc && state.currentTime < acc + dur) {
+          saveHistory();
+          const splitOffsetSource = (state.currentTime - acc) * clipSpeed;
+          const origOut = clip.outPoint;
+          
+          clip.outPoint = clip.inPoint + splitOffsetSource;
+          const newClip = {
+            inPoint: clip.outPoint,
+            outPoint: origOut,
+            speed: clipSpeed,
+            name: `Clip ${state.clips.length + 1}`
+          };
+          state.clips.splice(i + 1, 0, newClip);
+          state.selectedClipIdx = i + 1;
+          updateSelectedClipUI();
+          showToast("片段已分割");
+          break;
+        }
+        acc += dur;
+      }
+    });
+
+    // 拍手自動分割
+    document.getElementById('btnClapSplit').addEventListener('click', () => {
+      if (!state.waveformData || state.waveformData.length === 0 || state.videoDuration <= 0) {
+          showToast("無有效音訊數據可供分析");
+          return;
+      }
+
+      showToast("分析拍手/突波特徵中...");
+      console.log("啟動拍手偵測演算法...");
+      
+      const clapSourceTimes = [];
+      const threshold = 0.85; 
+      const minInterval = 1.0; 
+      let lastClap = -999;
+
+      for (let i = 0; i < state.waveformData.length; i++) {
+          if (state.waveformData[i] > threshold) {
+              const sourceTime = (i / state.waveformData.length) * state.videoDuration;
+              if (sourceTime - lastClap > minInterval) {
+                  clapSourceTimes.push(sourceTime);
+                  lastClap = sourceTime;
+              }
+          }
+      }
+
+      if (clapSourceTimes.length === 0) {
+          showToast("未偵測到明顯的拍手或突波聲");
+          console.log("未找到超過閥值的音訊突波。");
+          return;
+      }
+
+      saveHistory();
+      let splitCount = 0;
+
+      clapSourceTimes.forEach(cTime => {
+          for (let i = 0; i < state.clips.length; i++) {
+              const clip = state.clips[i];
+              if (cTime > clip.inPoint + 0.1 && cTime < clip.outPoint - 0.1) {
+                  const origOut = clip.outPoint;
+                  clip.outPoint = cTime;
+                  
+                  const newClip = {
+                      inPoint: cTime,
+                      outPoint: origOut,
+                      speed: clip.speed || 1.0,
+                      name: `Clip ${state.clips.length + 1}`
+                  };
+                  state.clips.splice(i + 1, 0, newClip);
+                  splitCount++;
+                  break; 
+              }
+          }
+      });
+
+      if (splitCount > 0) {
+          showToast(`成功偵測拍手！已自動分割出 ${splitCount + 1} 個片段`);
+          console.log(`自動分割完成，共切割了 ${splitCount} 刀`);
+          drawTimeline();
+      } else {
+          showToast("拍手聲均不在可用的片段範圍內");
+          state.undoStack.pop(); 
+          updateHistoryButtons();
+      }
+    });
+
+    document.getElementById('btnRename').addEventListener('click', () => {
+      if (state.selectedClipIdx >= 0) {
+        const name = prompt("輸入新名稱:", state.clips[state.selectedClipIdx].name);
+        if (name) {
+          saveHistory();
+          state.clips[state.selectedClipIdx].name = name;
+          drawTimeline();
+        }
+      } else {
+        showToast("請先選取片段");
+      }
+    });
+
+    document.getElementById('btnCut').addEventListener('click', () => {
+      if (state.selectedClipIdx >= 0 && state.clips.length > 1) {
+        saveHistory();
+        state.clipboard = JSON.parse(JSON.stringify(state.clips[state.selectedClipIdx]));
+        state.clips.splice(state.selectedClipIdx, 1);
+        state.selectedClipIdx = Math.max(0, state.selectedClipIdx - 1);
+        updateSelectedClipUI();
+        showToast("已剪下片段");
+      } else if (state.clips.length <= 1) {
+        showToast("無法剪下最後一個片段");
+      } else {
+        showToast("請先選取片段");
+      }
+    });
+
+    document.getElementById('btnCopy').addEventListener('click', () => {
+      if (state.selectedClipIdx >= 0) {
+        state.clipboard = JSON.parse(JSON.stringify(state.clips[state.selectedClipIdx]));
+        showToast("已複製片段");
+      } else {
+        showToast("請先選取片段");
+      }
+    });
+
+    document.getElementById('btnPaste').addEventListener('click', () => {
+      if (state.clipboard) {
+        saveHistory();
+        const newClip = JSON.parse(JSON.stringify(state.clipboard));
+        newClip.name = newClip.name + " (複製)";
+        
+        const insertIdx = state.selectedClipIdx >= 0 ? state.selectedClipIdx + 1 : state.clips.length;
+        state.clips.splice(insertIdx, 0, newClip);
+        state.selectedClipIdx = insertIdx;
+        
+        updateSelectedClipUI();
+        showToast("已貼上片段");
+      } else {
+        showToast("剪貼簿為空，請先複製或剪下");
+      }
+    });
+
+    document.getElementById('btnDelete').addEventListener('click', () => {
+      if (state.selectedClipIdx >= 0 && state.clips.length > 1) {
+        saveHistory();
+        state.clips.splice(state.selectedClipIdx, 1);
+        state.selectedClipIdx = Math.max(0, state.selectedClipIdx - 1);
+        updateSelectedClipUI();
+        showToast("片段已刪除");
+      } else if (state.clips.length <= 1) {
+        showToast("無法刪除最後一個片段");
+      } else {
+        showToast("請先選取片段");
+      }
+    });
+
+    // 速度變更綁定
+    document.getElementById('btnSpeed').addEventListener('click', () => {
+      if (state.selectedClipIdx >= 0) {
+        const currentSpeed = state.clips[state.selectedClipIdx].speed || 1.0;
+        const speedStr = prompt("請輸入播放速度 (例如 0.5 或 2.0，範圍 0.1 ~ 10.0):", currentSpeed);
+        if (speedStr !== null) {
+          const speed = parseFloat(speedStr);
+          if (!isNaN(speed) && speed >= 0.1 && speed <= 10.0) {
+            saveHistory();
+            state.clips[state.selectedClipIdx].speed = speed;
+            updateSelectedClipUI();
+            showToast(`速度已設為 ${speed}x`);
+            console.log(`[速度變更] ${state.clips[state.selectedClipIdx].name} 速度調整為 ${speed}x`);
+          } else {
+            showToast("請輸入有效的數字速度！");
+          }
+        }
+      } else {
+        showToast("請先選取片段");
+      }
+    });
+
+    document.getElementById('btnZoomIn').addEventListener('click', () => { state.zoomFactor = Math.min(state.zoomFactor * 1.5, 50.0); clampScroll(); drawTimeline(); });
+    document.getElementById('btnZoomOut').addEventListener('click', () => { state.zoomFactor = Math.max(state.zoomFactor / 1.5, 1.0); clampScroll(); drawTimeline(); });
+
+    // 單獨匯出選取片段 (彈出分享與儲存)
+    document.getElementById('btnExportClip').addEventListener('click', () => {
+      if (state.selectedClipIdx >= 0) {
+        const clip = state.clips[state.selectedClipIdx];
+        const clipSpeed = clip.speed || 1.0;
+        const dur = (clip.outPoint - clip.inPoint) / clipSpeed;
+        
+        console.log(`[單獨匯出片段] 準備匯出: ${clip.name}`);
+        console.log(`- 來源起點: ${clip.inPoint.toFixed(2)}s, 來源終點: ${clip.outPoint.toFixed(2)}s, 速度: ${clipSpeed}x`);
+        
+        timelineOverlayText.textContent = `正在匯出 ${clip.name}...`;
+        timelineOverlay.classList.remove('hidden');
+        
+        // 模擬匯出運算時間，完成後觸發系統分享與下載
+        setTimeout(async () => {
+          timelineOverlay.classList.add('hidden');
+          timelineOverlayText.textContent = `處理中...`;
+          
+          // 建立一個假的佔位檔案，來喚醒 iOS/Android 系統的分享與下載選單
+          const dummyContent = "ClipCut Export Placeholder - 這裡在實際產品中會是轉檔後的 mp4 二進制資料";
+          const dummyBlob = new Blob([dummyContent], { type: 'video/mp4' });
+          
+          // 取一個安全的檔案名稱
+          let safeFileName = clip.name.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5]/g, '_');
+          if(!safeFileName) safeFileName = "Clip";
+          const exportFileName = `ClipCut_${safeFileName}.mp4`;
+
+          // 判斷是否為行動裝置 (手機/平板)
+          const isMobile = /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+          // 只有在支援 Share API「且」是行動裝置時，才呼叫原生分享選單
+          if (navigator.share && isMobile) {
+            try {
+              const fileToShare = new File([dummyBlob], exportFileName, { type: 'video/mp4' });
+              await navigator.share({
+                title: `匯出影片: ${clip.name}`,
+                text: '這是我用 ClipCut Web 剪輯出來的片段！',
+                files: [fileToShare]
+              });
+              showToast("分享/儲存成功！");
+              console.log("✅ 成功呼叫系統 Share API。");
+            } catch (error) {
+              console.log("使用者取消分享或 Share API 失敗，改為直接下載:", error);
+              triggerDirectDownload(dummyBlob, exportFileName);
+            }
+          } else {
+            // 如果是在電腦版或是舊版瀏覽器，直接觸發檔案下載
+            console.log("偵測為電腦版或不支援 Share API，觸發傳統直接下載。");
+            triggerDirectDownload(dummyBlob, exportFileName);
+          }
+        }, 1500);
+      } else {
+        showToast("請先在時間軸上選取要匯出的片段 (亮藍色)");
+      }
+    });
+    
+    function triggerDirectDownload(blob, fileName) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast(`已下載檔案: ${fileName}`);
+    }
+
+    // --- 防止 iOS Safari 全域雙指縮放 ---
+    document.addEventListener('touchmove', function (e) {
+      if (e.touches.length > 1) {
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    // --- 時間軸雙指縮放 (Pinch-to-Zoom) ---
+    let initialPinchDistance = null;
+    let initialZoomFactor = 1.0;
+
+    timelineCanvas.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        initialPinchDistance = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        initialZoomFactor = state.zoomFactor;
+        state.isDraggingScrubber = false;
+        state.isPanning = false;
+        state.isDraggingClip = false;
+      }
+    }, { passive: false });
+
+    timelineCanvas.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 2) {
+        e.preventDefault(); 
+        if (initialPinchDistance) {
+          const currentDistance = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+          );
+          const scale = currentDistance / initialPinchDistance;
+          state.zoomFactor = Math.max(1.0, Math.min(initialZoomFactor * scale, 50.0));
+          clampScroll();
+          drawTimeline();
+        }
+      }
+    }, { passive: false });
+
+    timelineCanvas.addEventListener('touchend', (e) => {
+      if (e.touches.length < 2) {
+        initialPinchDistance = null;
+      }
+    });
+
+  </script>
+</body>
+</html>
