@@ -89,7 +89,7 @@
     <div class="flex items-center gap-1.5 flex-shrink-0">
       <i class="ph ph-scissors text-yellow-500 text-xl sm:text-2xl"></i>
       <h1 class="font-bold text-sm sm:text-lg tracking-wide text-gray-100 whitespace-nowrap">ClipCut</h1>
-      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.5</span>
+      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.6</span>
     </div>
     <div class="flex items-center gap-1 sm:gap-3 flex-shrink-0">
       <button id="btnNewProject" class="flex items-center gap-1 text-xs sm:text-sm bg-gray-800 text-gray-300 px-2.5 py-1.5 rounded-full font-medium active:scale-95 transition whitespace-nowrap flex-shrink-0">
@@ -232,6 +232,46 @@
       <button id="btnClapConfirm" class="flex-1 py-2 rounded-lg bg-yellow-500 text-yellow-950 font-bold flex flex-col items-center justify-center"><i class="ph ph-scissors mb-1 text-lg"></i><span class="text-[10px]">分割</span></button>
     </div>
     <button id="btnClapCancel" class="w-full mt-3 py-2 rounded-lg bg-red-900/40 text-red-400 border border-red-700/50 text-xs">結束審閱</button>
+  </div>
+
+  <!-- v1.6 export settings shared by full timeline and selected clip export. -->
+  <div id="exportSettingsModal" class="fixed inset-0 z-[10001] bg-black/85 backdrop-blur-md hidden flex items-center justify-center p-4">
+    <div class="bg-[#1c1917] border border-[#3f3a37] rounded-2xl p-5 w-full max-w-sm shadow-2xl">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-10 h-10 rounded-full bg-yellow-500/15 text-yellow-400 flex items-center justify-center flex-none">
+          <i class="ph ph-export text-2xl"></i>
+        </div>
+        <div class="min-w-0">
+          <h2 class="text-white font-bold">匯出設定</h2>
+          <p id="exportSettingsTarget" class="text-[11px] text-gray-400 truncate">選擇解像度及影片幀率</p>
+        </div>
+      </div>
+
+      <label class="block text-xs font-semibold text-gray-300 mb-1.5" for="exportResolution">解像度</label>
+      <select id="exportResolution" class="w-full bg-[#292524] border border-[#44403c] rounded-xl px-3 py-3 text-sm text-white mb-4 outline-none">
+        <option value="original">Original 原始解像度</option>
+        <option value="480">480p</option>
+        <option value="720">720p</option>
+        <option value="1080" selected>1080p</option>
+        <option value="2160">4K (2160p)</option>
+      </select>
+
+      <label class="block text-xs font-semibold text-gray-300 mb-1.5" for="exportFps">FPS</label>
+      <select id="exportFps" class="w-full bg-[#292524] border border-[#44403c] rounded-xl px-3 py-3 text-sm text-white mb-3 outline-none">
+        <option value="original">Original 原始 FPS</option>
+        <option value="24">24 FPS</option>
+        <option value="30" selected>30 FPS</option>
+        <option value="60">60 FPS</option>
+      </select>
+
+      <p id="exportSettingsHint" class="text-[11px] leading-relaxed text-gray-500 mb-4">高解像度及高 FPS 需要較多記憶體和匯出時間。</p>
+      <div class="flex gap-2">
+        <button id="btnCancelExportSettings" class="flex-1 py-3 rounded-xl bg-[#292524] text-gray-300 font-medium active:scale-95 transition">取消</button>
+        <button id="btnConfirmExportSettings" class="flex-[1.4] py-3 rounded-xl bg-yellow-500 text-yellow-950 font-bold active:scale-95 transition flex items-center justify-center gap-2">
+          <i class="ph ph-export text-xl"></i> 開始匯出
+        </button>
+      </div>
+    </div>
   </div>
 
   <!-- iOS requires media playback to start directly from a trusted tap. -->
@@ -1429,7 +1469,68 @@
       ctx.drawImage(sourceVideo, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
     }
 
-    async function exportTimelineRange(startSec, endSec, baseName) {
+    function inferOriginalFps(media) {
+      // Browser media metadata does not expose the source FPS reliably. Keep a
+      // stored value when available; otherwise use 30 FPS as a safe original fallback.
+      const value = Number(media && media.frameRate);
+      return Number.isFinite(value) && value >= 1 && value <= 120 ? value : 30;
+    }
+
+    function calculateExportSize(sourceWidth, sourceHeight, resolutionValue) {
+      let width = Math.max(2, sourceWidth || 1280);
+      let height = Math.max(2, sourceHeight || 720);
+      if (resolutionValue !== 'original') {
+        const targetShortEdge = Number(resolutionValue);
+        const shortEdge = Math.min(width, height);
+        if (Number.isFinite(targetShortEdge) && targetShortEdge > 0) {
+          const scale = targetShortEdge / shortEdge;
+          width *= scale;
+          height *= scale;
+        }
+      }
+      // H.264 encoders are more reliable with even dimensions.
+      width = Math.max(2, Math.round(width / 2) * 2);
+      height = Math.max(2, Math.round(height / 2) * 2);
+      return { width, height };
+    }
+
+    function chooseVideoBitrate(width, height, fps) {
+      const pixelsPerSecond = width * height * fps;
+      return Math.max(1500000, Math.min(45000000, Math.round(pixelsPerSecond * 0.12)));
+    }
+
+    let pendingExportRequest = null;
+
+    function requestExportSettings(request) {
+      pendingExportRequest = request;
+      const modal = document.getElementById('exportSettingsModal');
+      const target = document.getElementById('exportSettingsTarget');
+      const resolution = document.getElementById('exportResolution');
+      const fps = document.getElementById('exportFps');
+      target.textContent = request.label;
+      resolution.value = localStorage.getItem('clipcut-export-resolution') || '1080';
+      fps.value = localStorage.getItem('clipcut-export-fps') || '30';
+      modal.classList.remove('hidden');
+    }
+
+    document.getElementById('btnCancelExportSettings').addEventListener('click', () => {
+      pendingExportRequest = null;
+      document.getElementById('exportSettingsModal').classList.add('hidden');
+    });
+
+    document.getElementById('btnConfirmExportSettings').addEventListener('click', () => {
+      if (!pendingExportRequest) return;
+      const resolution = document.getElementById('exportResolution').value;
+      const fps = document.getElementById('exportFps').value;
+      localStorage.setItem('clipcut-export-resolution', resolution);
+      localStorage.setItem('clipcut-export-fps', fps);
+      const request = pendingExportRequest;
+      pendingExportRequest = null;
+      document.getElementById('exportSettingsModal').classList.add('hidden');
+      runExport(request.startSec, request.endSec, request.name, { resolution, fps });
+    });
+
+    async function exportTimelineRange(startSec, endSec, baseName, exportOptions) {
       if (!(endSec > startSec)) throw new Error("匯出範圍無效");
       const format = chooseExportFormat();
       if (!HTMLCanvasElement.prototype.captureStream) throw new Error("此瀏覽器不支援 Canvas 影片匯出");
@@ -1452,18 +1553,21 @@
         await loadExportSource(sourceVideo, firstMedia.src);
         const sourceWidth = sourceVideo.videoWidth || 1280;
         const sourceHeight = sourceVideo.videoHeight || 720;
-        const maxEdge = 1280;
-        const outputScale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
+        const firstMediaFps = inferOriginalFps(firstMedia);
+        const requestedFps = exportOptions.fps === 'original' ? firstMediaFps : Number(exportOptions.fps);
+        const exportFps = Math.max(1, Math.min(60, Number.isFinite(requestedFps) ? requestedFps : 30));
+        const exportSize = calculateExportSize(sourceWidth, sourceHeight, exportOptions.resolution);
         const exportCanvas = document.createElement('canvas');
-        exportCanvas.width = Math.max(2, Math.round(sourceWidth * outputScale / 2) * 2);
-        exportCanvas.height = Math.max(2, Math.round(sourceHeight * outputScale / 2) * 2);
+        exportCanvas.width = exportSize.width;
+        exportCanvas.height = exportSize.height;
         const exportCtx = exportCanvas.getContext('2d', { alpha: false });
-        stream = exportCanvas.captureStream(30);
+        stream = exportCanvas.captureStream(exportFps);
 
+        console.log(`匯出設定: ${exportCanvas.width}x${exportCanvas.height}, ${exportFps} FPS, ${format.mime}`);
         const chunks = [];
         recorder = new MediaRecorder(stream, {
           mimeType: format.mime,
-          videoBitsPerSecond: 6000000
+          videoBitsPerSecond: chooseVideoBitrate(exportCanvas.width, exportCanvas.height, exportFps)
         });
         recorder.ondataavailable = (event) => {
           if (event.data && event.data.size > 0) chunks.push(event.data);
@@ -1501,7 +1605,7 @@
           drawExportFrame(exportCtx, exportCanvas, sourceVideo);
           const percent = Math.min(100, Math.round((elapsed / exportDuration) * 100));
           timelineOverlayText.textContent = `正在匯出 ${percent}% (${format.ext.toUpperCase()})`;
-          await new Promise((resolve) => setTimeout(resolve, 1000 / 30));
+          await new Promise((resolve) => setTimeout(resolve, 1000 / exportFps));
         }
 
         drawExportFrame(exportCtx, exportCanvas, sourceVideo);
@@ -1555,12 +1659,12 @@
       setTimeout(() => URL.revokeObjectURL(url), 30000);
     }
 
-    async function runExport(startSec, endSec, name) {
+    async function runExport(startSec, endSec, name, exportOptions) {
       if (state.isPlaying) togglePlay();
       timelineOverlayText.textContent = "準備真實影片匯出...";
       timelineOverlay.classList.remove('hidden');
       try {
-        await exportTimelineRange(startSec, endSec, name);
+        await exportTimelineRange(startSec, endSec, name, exportOptions);
       } catch (error) {
         console.error(`匯出失敗: ${safeErrorText(error)}`);
         showToast(`匯出失敗: ${safeErrorText(error)}`);
@@ -1582,7 +1686,8 @@
       }
       const clip = state.clips[state.selectedClipIdx];
       const duration = (clip.outPoint - clip.inPoint) / (clip.speed || 1);
-      runExport(start, start + duration, clip.name || `Clip ${state.selectedClipIdx + 1}`);
+      const name = clip.name || `Clip ${state.selectedClipIdx + 1}`;
+      requestExportSettings({ startSec: start, endSec: start + duration, name, label: `匯出片段：${name}` });
     });
 
     document.getElementById('btnExport').addEventListener('click', () => {
@@ -1591,7 +1696,7 @@
         showToast("時間軸沒有可匯出的影片");
         return;
       }
-      runExport(0, duration, 'ClipCut Full Timeline');
+      requestExportSettings({ startSec: 0, endSec: duration, name: 'ClipCut Full Timeline', label: '匯出完整時間軸' });
     });
 
     // ==============================================================
