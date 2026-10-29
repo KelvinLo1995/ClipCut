@@ -89,7 +89,7 @@
     <div class="flex items-center gap-1.5 flex-shrink-0">
       <i class="ph ph-scissors text-yellow-500 text-xl sm:text-2xl"></i>
       <h1 class="font-bold text-sm sm:text-lg tracking-wide text-gray-100 whitespace-nowrap">ClipCut</h1>
-      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.8.1</span>
+      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.8.2</span>
     </div>
     <div class="flex items-center gap-1 sm:gap-3 flex-shrink-0">
       <button id="btnNewProject" class="flex items-center gap-1 text-xs sm:text-sm bg-gray-800 text-gray-300 px-2.5 py-1.5 rounded-full font-medium active:scale-95 transition whitespace-nowrap flex-shrink-0">
@@ -1013,7 +1013,7 @@
       const totalDur = getTimelineDuration();
       if (state.currentTime >= totalDur) {
         state.currentTime = 0; state.isPlaying = false;
-        audioPlayer.pause(); audioPlayer.currentTime = 0; bgAudioPlayer.pause(); bgAudioPlayer.currentTime = 0;
+        video.pause(); video.currentTime = 0; audioPlayer.pause(); audioPlayer.currentTime = 0; bgAudioPlayer.pause(); bgAudioPlayer.currentTime = 0;
         btnCenterPlay.classList.remove('hidden'); btnPlay.innerHTML = `<i class="ph ph-play text-xl mb-1"></i><span class="text-[10px]">播放</span>`;
       } else if (state.playUntil !== undefined && state.currentTime >= state.playUntil) {
         state.currentTime = state.playUntil; state.playUntil = undefined;
@@ -1024,14 +1024,34 @@
       if (mapped.mediaId && state.currentMediaId !== mapped.mediaId) {
           state.currentMediaId = mapped.mediaId;
           const media = state.mediaPool[mapped.mediaId];
-          if (media) { video.src = media.src; audioPlayer.src = media.src; video.load(); audioPlayer.load(); state.lastPlayedClipIndex = -1; }
+          if (media) {
+            video.pause(); audioPlayer.pause();
+            video.src = media.src; audioPlayer.src = media.src;
+            video.load(); audioPlayer.load();
+            state.lastPlayedClipIndex = -1;
+          }
       }
-      if (state.lastPlayedClipIndex !== mapped.clipIndex) {
-          audioPlayer.currentTime = mapped.sourceTime; state.lastPlayedClipIndex = mapped.clipIndex;
-      } else if (Math.abs(audioPlayer.currentTime - mapped.sourceTime) > 1.5) {
+
+      const clipChanged = state.lastPlayedClipIndex !== mapped.clipIndex;
+      if (clipChanged) {
+          video.currentTime = mapped.sourceTime;
           audioPlayer.currentTime = mapped.sourceTime;
+          state.lastPlayedClipIndex = mapped.clipIndex;
+          video.playbackRate = mapped.speed;
+          audioPlayer.playbackRate = mapped.speed;
+          video.play().catch((error) => console.warn(`預覽影片播放受阻: ${safeErrorText(error)}`));
+          audioPlayer.play().catch((error) => console.warn(`預覽音訊播放受阻: ${safeErrorText(error)}`));
+      } else {
+          if (video.playbackRate !== mapped.speed) video.playbackRate = mapped.speed;
+          if (audioPlayer.playbackRate !== mapped.speed) audioPlayer.playbackRate = mapped.speed;
+
+          // Let the media elements play continuously. Only correct meaningful drift;
+          // assigning currentTime every animation frame cancels playbackRate on iOS.
+          if (Math.abs(video.currentTime - mapped.sourceTime) > 0.20) video.currentTime = mapped.sourceTime;
+          if (Math.abs(audioPlayer.currentTime - mapped.sourceTime) > 0.25) audioPlayer.currentTime = mapped.sourceTime;
+          if (video.paused && state.isPlaying) video.play().catch(() => {});
+          if (audioPlayer.paused && state.isPlaying) audioPlayer.play().catch(() => {});
       }
-      if (audioPlayer.playbackRate !== mapped.speed) audioPlayer.playbackRate = mapped.speed;
 
       if (state.bgAudioSrc) {
           if (state.currentTime >= state.bgAudioStartTime && state.currentTime <= state.bgAudioStartTime + state.bgAudioDuration) {
@@ -1041,7 +1061,6 @@
           } else { if (!bgAudioPlayer.paused) bgAudioPlayer.pause(); }
       }
 
-      video.currentTime = mapped.sourceTime;
       renderPreviewFrame(); clampScroll();
       if (state.isPlaying) requestAnimationFrame(playLoop);
     }
@@ -1059,13 +1078,23 @@
     function togglePlay() {
       if (getTimelineDuration() <= 0) return;
       if (state.isPlaying) {
-        state.isPlaying = false; audioPlayer.pause();
+        state.isPlaying = false; video.pause(); audioPlayer.pause();
         btnCenterPlay.classList.remove('hidden'); btnPlay.innerHTML = `<i class="ph ph-play text-xl mb-1"></i><span class="text-[10px]">播放</span>`;
       } else {
         state.isPlaying = true; state.lastPlayedClipIndex = -1;
         const mapped = mapTimelineToSource(state.currentTime);
-        audioPlayer.currentTime = mapped.sourceTime; audioPlayer.playbackRate = mapped.speed;
-        audioPlayer.play().catch(e => console.warn("音訊播放受阻:", e));
+        const media = state.mediaPool[mapped.mediaId];
+        if (media && state.currentMediaId !== mapped.mediaId) {
+          state.currentMediaId = mapped.mediaId;
+          video.src = media.src; audioPlayer.src = media.src;
+          video.load(); audioPlayer.load();
+        }
+        video.currentTime = mapped.sourceTime;
+        video.playbackRate = mapped.speed;
+        audioPlayer.currentTime = mapped.sourceTime;
+        audioPlayer.playbackRate = mapped.speed;
+        video.play().catch(e => console.warn(`影片預覽播放受阻: ${safeErrorText(e)}`));
+        audioPlayer.play().catch(e => console.warn(`音訊播放受阻: ${safeErrorText(e)}`));
         if (state.bgAudioSrc && state.currentTime >= state.bgAudioStartTime && state.currentTime <= state.bgAudioStartTime + state.bgAudioDuration) {
             bgAudioPlayer.currentTime = state.currentTime - state.bgAudioStartTime;
             bgAudioPlayer.play().catch(e => console.warn("配樂播放受阻:", e));
@@ -1390,7 +1419,15 @@
         if (speedStr !== null) {
           const speed = parseFloat(speedStr);
           if (!isNaN(speed) && speed >= 0.1 && speed <= 10.0) {
-            saveHistory(); state.clips[state.selectedClipIdx].speed = speed; updateSelectedClipUI(); showToast(`速度已設為 ${speed}x`);
+            saveHistory();
+            state.clips[state.selectedClipIdx].speed = speed;
+            const activeMapped = mapTimelineToSource(state.currentTime);
+            if (activeMapped.clipIndex === state.selectedClipIdx) {
+              video.playbackRate = speed;
+              audioPlayer.playbackRate = speed;
+            }
+            updateSelectedClipUI();
+            showToast(`速度已設為 ${speed}x，預覽已同步`);
           } else showToast("請輸入有效的數字速度！");
         }
       } else showToast("請先選取片段");
