@@ -214,8 +214,22 @@
     console.warn = function(...args) { origWarn(...args); appendLog(args.join(' '), 'warn'); };
     console.error = function(...args) { origError(...args); appendLog(args.join(' '), 'error'); };
 
-    window.addEventListener('error', (e) => { console.error(`Global Error: ${e.message} at ${e.filename}:${e.lineno}`); });
-    window.addEventListener('unhandledrejection', (e) => { console.error(`Unhandled Promise: ${e.reason}`); });
+    function errorText(error) {
+      if (error == null) return '未知錯誤（iOS 回傳了空的錯誤物件）';
+      if (typeof error === 'string') return error;
+      try {
+        return error.message || error.name || JSON.stringify(error) || String(error);
+      } catch (_) {
+        return String(error);
+      }
+    }
+    window.addEventListener('error', (e) => {
+      console.error(`Global Error: ${errorText(e.error || e.message)} at ${e.filename || 'inline'}:${e.lineno || 0}`);
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      e.preventDefault();
+      console.error(`Unhandled Promise: ${errorText(e.reason)}`);
+    });
 
     document.getElementById('btnToggleLog').addEventListener('click', () => {
       const panel = document.getElementById('logPanel');
@@ -226,8 +240,15 @@
       }
     });
     document.getElementById('btnClearLog').addEventListener('click', () => { logContent.innerHTML = ''; logCount = 0; logCountSpan.textContent = '(0 logs)'; });
-    document.getElementById('btnCopyLog').addEventListener('click', () => {
-      navigator.clipboard.writeText(logContent.innerText).then(() => showToast("日誌已複製"));
+    document.getElementById('btnCopyLog').addEventListener('click', async () => {
+      try {
+        if (!navigator.clipboard) throw new Error("Clipboard API 不可用");
+        await navigator.clipboard.writeText(logContent.innerText);
+        showToast("日誌已複製");
+      } catch (error) {
+        console.warn(`複製日誌失敗: ${errorText(error)}`);
+        showToast("無法自動複製，請展開後手動選取日誌");
+      }
     });
 
     console.log("應用程式核心啟動完成，已綁定底部控制台。");
@@ -353,164 +374,235 @@
       drawTimeline();
       timelineOverlayText.textContent = "正在提取真實音訊特徵 (零假數據)...";
       timelineOverlay.classList.remove('hidden');
-      extractAudioAndWaveform(mediaId, file);
+      try {
+        await extractAudioAndWaveform(mediaId, file);
+      } catch (error) {
+        console.error(`[音訊任務未預期失敗] ${errorText(error)}`);
+        showToast("音訊分析失敗，但影片仍可繼續剪輯");
+        timelineOverlay.classList.add('hidden');
+      }
     }
 
     // ==============================================================
     // 🚀 終極真音訊提取器 (Web Audio + iOS 實時擷取兜底，100% 砍掉假數據)
     // ==============================================================
-    async function extractAudioAndWaveform(mediaId, file) {
-      console.log(`[音訊任務啟動] 檔案: ${file.name}, 大小: ${(file.size / (1024 * 1024)).toFixed(2)} MB`);
-      
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-      }
-
-      let audioBuffer = null;
-      const rawBuffer = await file.arrayBuffer();
-
-      // 步驟 1: 電腦版與安卓常規解碼 (完美支援 MP4/WebM，部分支援 MOV)
-      try {
-        console.log("嘗試使用原生 decodeAudioData 進行解碼...");
-        audioBuffer = await new Promise((resolve, reject) => {
-          audioCtx.decodeAudioData(rawBuffer, resolve, reject);
-        });
-        console.log("✅ 原生音軌解碼成功！");
-      } catch (err1) {
-        console.warn("⚠️ 原生解碼受阻 (常見於 iOS 的 MOV 格式)！");
-        console.warn("錯誤細節:", err1);
-        
-        // 步驟 2: iOS 專用救援模式 - 實時擷取真音軌 (安全、可靠、絕無假數據)
-        console.log("🚀 啟動 iOS 專用實時真音訊擷取模式...");
-        try {
-          audioBuffer = await extractAudioViaMediaElement(state.mediaPool[mediaId].src, state.mediaPool[mediaId].duration);
-          console.log("✅ iOS 實時真音訊擷取成功！");
-        } catch (err2) {
-          console.error("❌ 所有音軌解碼皆受阻:", err2);
-          showToast("無法解碼此檔案音軌，這可能是未支援的格式");
-          timelineOverlay.classList.add('hidden');
-          return; // 直接中斷，絕對不塞假數據！
+    async function getAudioContext() {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) throw new Error("此瀏覽器不支援 Web Audio API");
+      const ctx = new AudioContextClass();
+      if (ctx.state === 'suspended') {
+        try { await ctx.resume(); } catch (error) {
+          console.warn(`AudioContext resume 受阻: ${errorText(error)}`);
         }
       }
-
-      // 步驟 3: 將真實音訊處理為波形、過零率高頻 (Freq) 與訊噪比 (SNR)
-      const channelData = audioBuffer.getChannelData(0);
-      const numPoints = 1400;
-      const step = Math.ceil(channelData.length / numPoints);
-      const wave = new Float32Array(numPoints);
-      const freq = new Float32Array(numPoints);
-      const snr = new Float32Array(numPoints);
-
-      for (let i = 0; i < numPoints; i++) {
-        let sumSquares = 0; let count = 0; let crossings = 0; let prevSign = 0;
-        for (let j = 0; j < step && (i * step + j) < channelData.length; j++) {
-          const val = channelData[i * step + j];
-          sumSquares += val ** 2;
-          const sign = Math.sign(val);
-          if (j > 0 && sign !== 0 && sign !== prevSign) crossings++;
-          if (sign !== 0) prevSign = sign;
-          count++;
-        }
-        wave[i] = Math.sqrt(sumSquares / count) * 3.0; 
-        if(wave[i] > 1.0) wave[i] = 1.0;
-        freq[i] = Math.min(1.0, (crossings / count) * 4.0); 
-      }
-
-      for (let i = 0; i < numPoints; i++) {
-        const bgRange = Math.floor((0.5 / audioBuffer.duration) * numPoints) || 10;
-        let bgSum = 0, bgCount = 0;
-        for (let k = i - bgRange; k < i - 1; k++) {
-          if (k >= 0) { bgSum += wave[k]; bgCount++; }
-        }
-        const bgAvg = bgCount > 0 ? (bgSum / bgCount) : 0.001;
-        const rawSnr = wave[i] / (bgAvg + 0.001);
-        snr[i] = Math.min(1.0, Math.max(0, (rawSnr - 1) / 4.0));
-      }
-
-      state.mediaPool[mediaId].waveformData = wave;
-      state.mediaPool[mediaId].freqData = freq;
-      state.mediaPool[mediaId].snrData = snr;
-      timelineOverlay.classList.add('hidden');
-      drawTimeline();
-      showToast("真實音訊波形分析完成！");
+      return ctx;
     }
 
-    // 利用 video 元素與 Web Audio API 掛勾，強制擷取真實音訊
-    function extractAudioViaMediaElement(videoSrc, duration) {
+    function decodeAudioDataSafe(audioCtx, arrayBuffer) {
       return new Promise((resolve, reject) => {
-        const probeVideo = document.createElement('video');
-        probeVideo.src = videoSrc;
-        probeVideo.muted = false; // 必須取消靜音才能捕獲音訊
-        probeVideo.crossOrigin = "anonymous";
-        probeVideo.playsInline = true;
-        
-        // 在 iOS 上必須將其附加到 DOM，否則 Web Audio 無法穩定攔截其音訊
-        probeVideo.style.display = 'none';
-        document.body.appendChild(probeVideo);
-
-        const dur = (duration > 0 && isFinite(duration)) ? duration : 10;
-        const sampleRate = 16000; // 降低取樣率以求秒級分析完成
-        const totalSamples = Math.floor(dur * sampleRate);
-        const pcmData = new Float32Array(totalSamples);
-
-        const aCtx = new (window.AudioContext || window.webkitAudioContext)();
-        let sourceNode;
-        try {
-          sourceNode = aCtx.createMediaElementSource(probeVideo);
-        } catch(e) {
-          document.body.removeChild(probeVideo);
-          return reject(e);
-        }
-
-        const scriptNode = aCtx.createScriptProcessor(4096, 1, 1);
-        let writeIdx = 0;
-
-        scriptNode.onaudioprocess = (e) => {
-          const input = e.inputBuffer.getChannelData(0);
-          for (let i = 0; i < input.length; i++) {
-            if (writeIdx < totalSamples) {
-              pcmData[writeIdx++] = input[i];
-            }
-          }
-          if (writeIdx >= totalSamples) finish();
+        let settled = false;
+        const ok = (buffer) => {
+          if (settled) return;
+          settled = true;
+          buffer ? resolve(buffer) : reject(new Error("decodeAudioData 未回傳 AudioBuffer"));
         };
-
-        function finish() {
-          probeVideo.pause();
-          sourceNode.disconnect();
-          scriptNode.disconnect();
-          if (document.body.contains(probeVideo)) document.body.removeChild(probeVideo);
-          
-          const outBuf = aCtx.createBuffer(1, totalSamples, sampleRate);
-          outBuf.copyToChannel(pcmData, 0);
-          resolve(outBuf);
+        const fail = (error) => {
+          if (settled) return;
+          settled = true;
+          reject(error || new Error("decodeAudioData 解碼失敗（iOS 未提供錯誤細節）"));
+        };
+        try {
+          const result = audioCtx.decodeAudioData(arrayBuffer.slice(0), ok, fail);
+          if (result && typeof result.then === 'function') result.then(ok).catch(fail);
+        } catch (error) {
+          fail(error);
         }
-
-        probeVideo.onended = finish;
-        sourceNode.connect(scriptNode);
-        scriptNode.connect(aCtx.destination);
-        
-        // iOS 最多允許 2 倍速安全播放提取
-        probeVideo.playbackRate = 2.0; 
-        probeVideo.play().catch(e => {
-            if (document.body.contains(probeVideo)) document.body.removeChild(probeVideo);
-            reject(e);
-        });
-
-        // 設置超時保護 (給予充分的提取時間)
-        const timeoutMs = (dur / 2.0) * 1000 + 8000;
-        setTimeout(() => {
-          if (writeIdx > 0) {
-            finish();
-          } else {
-            if (document.body.contains(probeVideo)) document.body.removeChild(probeVideo);
-            reject(new Error("Video 真實擷取超時"));
-          }
-        }, Math.max(15000, timeoutMs));
       });
     }
 
+    async function extractAudioAndWaveform(mediaId, file) {
+      console.log(`[音訊任務啟動] 檔案: ${file.name}, 大小: ${(file.size / (1024 * 1024)).toFixed(2)} MB`);
+      let audioCtx = null;
+      let audioBuffer = null;
+      try {
+        audioCtx = await getAudioContext();
+        console.log("讀取檔案緩衝區...");
+        const rawBuffer = await file.arrayBuffer();
+        try {
+          console.log("嘗試使用原生 decodeAudioData 進行解碼...");
+          audioBuffer = await decodeAudioDataSafe(audioCtx, rawBuffer);
+          console.log("原生音軌解碼成功！");
+        } catch (err1) {
+          console.warn(`原生解碼受阻（iPhone MOV 常見）: ${errorText(err1)}`);
+          console.log("啟動 iOS MediaElement 真音訊擷取模式，影片會快速靜音掃描一次...");
+          try {
+            audioBuffer = await extractAudioViaMediaElement(
+              state.mediaPool[mediaId].src,
+              state.mediaPool[mediaId].duration
+            );
+            console.log("iOS MediaElement 音訊擷取成功！");
+          } catch (err2) {
+            throw new Error(`原生解碼與 iOS 擷取均失敗。原生: ${errorText(err1)}；擷取: ${errorText(err2)}`);
+          }
+        }
+
+        if (!audioBuffer || audioBuffer.length === 0 || audioBuffer.duration <= 0) {
+          throw new Error("沒有取得可分析的音訊樣本");
+        }
+
+        const channelData = audioBuffer.getChannelData(0);
+        const numPoints = Math.min(1400, Math.max(1, channelData.length));
+        const step = Math.max(1, Math.ceil(channelData.length / numPoints));
+        const wave = new Float32Array(numPoints);
+        const freq = new Float32Array(numPoints);
+        const snr = new Float32Array(numPoints);
+
+        for (let i = 0; i < numPoints; i++) {
+          let sumSquares = 0, count = 0, crossings = 0, prevSign = 0;
+          for (let j = 0; j < step && (i * step + j) < channelData.length; j++) {
+            const val = channelData[i * step + j];
+            sumSquares += val * val;
+            const sign = Math.sign(val);
+            if (j > 0 && sign !== 0 && prevSign !== 0 && sign !== prevSign) crossings++;
+            if (sign !== 0) prevSign = sign;
+            count++;
+          }
+          if (count > 0) {
+            wave[i] = Math.min(1, Math.sqrt(sumSquares / count) * 3);
+            freq[i] = Math.min(1, (crossings / count) * 4);
+          }
+        }
+
+        const bgRange = Math.max(1, Math.floor((0.5 / Math.max(audioBuffer.duration, 0.001)) * numPoints) || 10);
+        for (let i = 0; i < numPoints; i++) {
+          let bgSum = 0, bgCount = 0;
+          for (let k = Math.max(0, i - bgRange); k < i; k++) {
+            bgSum += wave[k]; bgCount++;
+          }
+          const bgAvg = bgCount ? bgSum / bgCount : 0.001;
+          snr[i] = Math.min(1, Math.max(0, ((wave[i] / (bgAvg + 0.001)) - 1) / 4));
+        }
+
+        const media = state.mediaPool[mediaId];
+        if (!media) throw new Error("媒體已被移除，停止寫入分析結果");
+        media.waveformData = wave;
+        media.freqData = freq;
+        media.snrData = snr;
+        drawTimeline();
+        showToast("真實音訊波形分析完成！");
+      } catch (error) {
+        console.error(`音訊分析失敗: ${errorText(error)}`);
+        showToast("iOS 無法擷取此 MOV 音軌；影片仍可剪輯");
+      } finally {
+        timelineOverlay.classList.add('hidden');
+        if (audioCtx && audioCtx.state !== 'closed') {
+          try { await audioCtx.close(); } catch (_) {}
+        }
+      }
+    }
+
+    function extractAudioViaMediaElement(videoSrc, duration) {
+      return new Promise(async (resolve, reject) => {
+        let probeVideo = null, aCtx = null, sourceNode = null, scriptNode = null, silentGain = null;
+        let timer = null, settled = false, writeIdx = 0;
+        const dur = (duration > 0 && isFinite(duration)) ? duration : 10;
+        const sampleRate = 16000;
+        const estimatedSamples = Math.max(1, Math.ceil(dur * sampleRate));
+        const pcmData = new Float32Array(estimatedSamples);
+
+        const cleanup = async () => {
+          if (timer) clearTimeout(timer);
+          if (probeVideo) {
+            try { probeVideo.pause(); } catch (_) {}
+            probeVideo.removeAttribute('src');
+            try { probeVideo.load(); } catch (_) {}
+            if (probeVideo.parentNode) probeVideo.parentNode.removeChild(probeVideo);
+          }
+          try { if (sourceNode) sourceNode.disconnect(); } catch (_) {}
+          try { if (scriptNode) { scriptNode.onaudioprocess = null; scriptNode.disconnect(); } } catch (_) {}
+          try { if (silentGain) silentGain.disconnect(); } catch (_) {}
+          if (aCtx && aCtx.state !== 'closed') {
+            try { await aCtx.close(); } catch (_) {}
+          }
+        };
+
+        const fail = async (error) => {
+          if (settled) return;
+          settled = true;
+          await cleanup();
+          reject(error || new Error("iOS MediaElement 擷取失敗"));
+        };
+
+        const finish = async () => {
+          if (settled) return;
+          if (writeIdx <= 0) return fail(new Error("未收到任何 PCM 音訊樣本"));
+          settled = true;
+          try {
+            const finalLength = Math.min(writeIdx, pcmData.length);
+            const outBuf = aCtx.createBuffer(1, finalLength, sampleRate);
+            outBuf.copyToChannel(pcmData.subarray(0, finalLength), 0);
+            await cleanup();
+            resolve(outBuf);
+          } catch (error) {
+            settled = false;
+            await fail(error);
+          }
+        };
+
+        try {
+          aCtx = await getAudioContext();
+          probeVideo = document.createElement('video');
+          probeVideo.src = videoSrc;
+          probeVideo.preload = 'auto';
+          probeVideo.muted = false;
+          probeVideo.volume = 1;
+          probeVideo.playsInline = true;
+          probeVideo.setAttribute('playsinline', '');
+          probeVideo.setAttribute('webkit-playsinline', '');
+          probeVideo.style.position = 'fixed';
+          probeVideo.style.width = '1px';
+          probeVideo.style.height = '1px';
+          probeVideo.style.opacity = '0.01';
+          probeVideo.style.pointerEvents = 'none';
+          probeVideo.style.left = '-10px';
+          probeVideo.style.bottom = '0';
+          document.body.appendChild(probeVideo);
+
+          sourceNode = aCtx.createMediaElementSource(probeVideo);
+          scriptNode = aCtx.createScriptProcessor(4096, 1, 1);
+          silentGain = aCtx.createGain();
+          silentGain.gain.value = 0;
+
+          scriptNode.onaudioprocess = (event) => {
+            if (settled) return;
+            const input = event.inputBuffer;
+            if (!input || input.numberOfChannels < 1) return;
+            const samples = input.getChannelData(0);
+            const sourceRate = input.sampleRate || aCtx.sampleRate;
+            const ratio = sourceRate / sampleRate;
+            for (let out = 0; out < samples.length / ratio && writeIdx < pcmData.length; out++) {
+              pcmData[writeIdx++] = samples[Math.min(samples.length - 1, Math.floor(out * ratio))];
+            }
+            if (writeIdx >= pcmData.length) finish();
+          };
+
+          probeVideo.addEventListener('ended', finish, { once: true });
+          probeVideo.addEventListener('error', () => fail(new Error(`影片元素載入失敗，MediaError code: ${probeVideo.error ? probeVideo.error.code : 'unknown'}`)), { once: true });
+          sourceNode.connect(scriptNode);
+          scriptNode.connect(silentGain);
+          silentGain.connect(aCtx.destination);
+
+          probeVideo.playbackRate = 2;
+          await probeVideo.play();
+          timer = setTimeout(() => {
+            if (writeIdx > 0) finish();
+            else fail(new Error("影片真實音訊擷取超時，可能受 iOS 自動播放或編碼限制"));
+          }, Math.max(15000, (dur / 2) * 1000 + 10000));
+        } catch (error) {
+          await fail(error);
+        }
+      });
+    }
     function renderPreviewFrame() {
       if (!video.videoWidth) return;
       const parent = previewCanvas.parentElement;
@@ -791,13 +883,13 @@
       const file = e.target.files[0];
       if (!file) return;
       emptyPlaceholder.classList.add('hidden'); btnCenterPlay.classList.remove('hidden');
-      processNewVideo(file, false);
+      await processNewVideo(file, false);
     });
     
     document.getElementById('btnAddVideo').addEventListener('click', () => { appendVideoFileInput.click(); });
     appendVideoFileInput.addEventListener('change', async (e) => {
       const file = e.target.files[0]; if (!file) return;
-      processNewVideo(file, true); showToast("影片已附加至時間軸");
+      await processNewVideo(file, true); showToast("影片已附加至時間軸");
     });
 
     video.addEventListener('loadeddata', renderPreviewFrame); video.addEventListener('seeked', renderPreviewFrame);
