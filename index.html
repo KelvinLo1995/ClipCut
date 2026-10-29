@@ -89,7 +89,7 @@
     <div class="flex items-center gap-1.5 flex-shrink-0">
       <i class="ph ph-scissors text-yellow-500 text-xl sm:text-2xl"></i>
       <h1 class="font-bold text-sm sm:text-lg tracking-wide text-gray-100 whitespace-nowrap">ClipCut</h1>
-      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.8</span>
+      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.8.1</span>
     </div>
     <div class="flex items-center gap-1 sm:gap-3 flex-shrink-0">
       <button id="btnNewProject" class="flex items-center gap-1 text-xs sm:text-sm bg-gray-800 text-gray-300 px-2.5 py-1.5 rounded-full font-medium active:scale-95 transition whitespace-nowrap flex-shrink-0">
@@ -1628,7 +1628,7 @@
     async function exportOriginalFileLosslessly(direct) {
       const originalFile = direct.file;
       const originalName = direct.fileName;
-      console.log(`v1.8 無損直出: ${originalName}, ${(originalFile.size / 1048576).toFixed(2)} MB, ${originalFile.type || '原始 MIME'}`);
+      console.log(`v1.8.1 無損直出: ${originalName}, ${(originalFile.size / 1048576).toFixed(2)} MB, ${originalFile.type || '原始 MIME'}`);
       showToast('未偵測到剪輯，正在無損輸出原始檔...');
       await saveExportBlob(originalFile, originalName);
       console.log('無損直出完成：音軌、FPS、方向、編碼及 metadata 均保持原檔。');
@@ -1673,8 +1673,18 @@
       // this trusted tap so iOS can capture the edited source audio.
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       preparedExportAudioContext = AudioContextClass ? new AudioContextClass() : null;
-      if (preparedExportAudioContext && preparedExportAudioContext.state === 'suspended') {
-        preparedExportAudioContext.resume().catch(() => {});
+      if (preparedExportAudioContext) {
+        if (preparedExportAudioContext.state === 'suspended') preparedExportAudioContext.resume().catch(() => {});
+        // A zero-volume pulse unlocks Web Audio on iOS without audible output.
+        try {
+          const unlockOscillator = preparedExportAudioContext.createOscillator();
+          const unlockGain = preparedExportAudioContext.createGain();
+          unlockGain.gain.value = 0;
+          unlockOscillator.connect(unlockGain);
+          unlockGain.connect(preparedExportAudioContext.destination);
+          unlockOscillator.start();
+          unlockOscillator.stop(preparedExportAudioContext.currentTime + 0.02);
+        } catch (_) {}
       }
       runExport(request.startSec, request.endSec, request.name, options, preparedExportAudioContext);
     });
@@ -1688,7 +1698,10 @@
       const firstMedia = state.mediaPool[segments[0].mediaId];
       if (!firstMedia) throw new Error("找不到來源影片");
       const sourceVideo = document.createElement('video');
-      sourceVideo.muted = true;
+      // Must be unmuted for Safari/WebKit to deliver real samples to
+      // createMediaElementSource(). It is not connected to speakers.
+      sourceVideo.muted = false;
+      sourceVideo.defaultMuted = false;
       sourceVideo.volume = 1;
       sourceVideo.playsInline = true;
       sourceVideo.preload = 'auto';
@@ -1703,6 +1716,7 @@
       let recorder = null;
       let outputStream = null;
       let audioSourceNode = null;
+      let audioGainNode = null;
       let audioDestination = null;
       try {
         await loadExportSource(sourceVideo, firstMedia.src);
@@ -1717,21 +1731,38 @@
         outputStream = new MediaStream(canvasStream.getVideoTracks());
 
         // Add actual edited clip audio to the recording when Web Audio is available.
-        if (exportAudioContext) {
-          if (exportAudioContext.state === 'suspended') await exportAudioContext.resume();
-          audioSourceNode = exportAudioContext.createMediaElementSource(sourceVideo);
-          audioDestination = exportAudioContext.createMediaStreamDestination();
-          audioSourceNode.connect(audioDestination);
-          audioDestination.stream.getAudioTracks().forEach((track) => outputStream.addTrack(track));
+        if (!exportAudioContext) throw new Error("無法建立音訊匯出引擎");
+        if (exportAudioContext.state === 'suspended') await exportAudioContext.resume();
+        if (exportAudioContext.state !== 'running') {
+          throw new Error(`音訊引擎未啟動: ${exportAudioContext.state}`);
         }
+
+        audioSourceNode = exportAudioContext.createMediaElementSource(sourceVideo);
+        audioGainNode = exportAudioContext.createGain();
+        audioGainNode.gain.value = 1;
+        audioDestination = exportAudioContext.createMediaStreamDestination();
+        audioSourceNode.connect(audioGainNode);
+        audioGainNode.connect(audioDestination);
+
+        const exportAudioTracks = audioDestination.stream.getAudioTracks();
+        if (!exportAudioTracks.length) throw new Error("未能建立匯出音軌");
+        exportAudioTracks.forEach((track) => {
+          track.enabled = true;
+          outputStream.addTrack(track);
+        });
+        console.log(`匯出音軌已建立: ${exportAudioTracks.length} track, ${exportAudioContext.sampleRate} Hz`);
 
         const bitrate = chooseQualityBitrate(exportCanvas.width, exportCanvas.height, exportFps);
         console.log(`高品質匯出: ${exportCanvas.width}x${exportCanvas.height}, ${exportFps} FPS, ${(bitrate / 1000000).toFixed(1)} Mbps, ${format.mime}`);
+        const streamAudioTracks = outputStream.getAudioTracks();
+        if (!streamAudioTracks.length) throw new Error("MediaRecorder 輸入缺少音軌");
+        console.log(`MediaRecorder 輸入: ${outputStream.getVideoTracks().length} video + ${streamAudioTracks.length} audio`);
+
         const chunks = [];
         recorder = new MediaRecorder(outputStream, {
           mimeType: format.mime,
           videoBitsPerSecond: bitrate,
-          audioBitsPerSecond: 192000
+          audioBitsPerSecond: 256000
         });
         recorder.ondataavailable = (event) => { if (event.data && event.data.size > 0) chunks.push(event.data); };
         const stopped = new Promise((resolve, reject) => {
@@ -1771,6 +1802,7 @@
         if (recorder && recorder.state !== 'inactive') { try { recorder.stop(); } catch (_) {} }
         if (outputStream) outputStream.getTracks().forEach((track) => track.stop());
         try { if (audioSourceNode) audioSourceNode.disconnect(); } catch (_) {}
+        try { if (audioGainNode) audioGainNode.disconnect(); } catch (_) {}
         try { if (audioDestination) audioDestination.disconnect(); } catch (_) {}
         try { sourceVideo.pause(); } catch (_) {}
         sourceVideo.removeAttribute('src');
