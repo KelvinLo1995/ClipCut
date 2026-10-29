@@ -89,7 +89,7 @@
     <div class="flex items-center gap-1.5 flex-shrink-0">
       <i class="ph ph-scissors text-yellow-500 text-xl sm:text-2xl"></i>
       <h1 class="font-bold text-sm sm:text-lg tracking-wide text-gray-100 whitespace-nowrap">ClipCut</h1>
-      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.4</span>
+      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.5</span>
     </div>
     <div class="flex items-center gap-1 sm:gap-3 flex-shrink-0">
       <button id="btnNewProject" class="flex items-center gap-1 text-xs sm:text-sm bg-gray-800 text-gray-300 px-2.5 py-1.5 rounded-full font-medium active:scale-95 transition whitespace-nowrap flex-shrink-0">
@@ -1359,34 +1359,240 @@
     document.getElementById('btnZoomIn').addEventListener('click', () => { state.zoomFactor = Math.min(state.zoomFactor * 1.5, 50.0); clampScroll(); drawTimeline(); });
     document.getElementById('btnZoomOut').addEventListener('click', () => { state.zoomFactor = Math.max(state.zoomFactor / 1.5, 1.0); clampScroll(); drawTimeline(); });
 
-    document.getElementById('btnExportClip').addEventListener('click', () => {
-      if (state.selectedClipIdx >= 0) {
-        const clip = state.clips[state.selectedClipIdx];
-        timelineOverlayText.textContent = `正在匯出 ${clip.name}...`; timelineOverlay.classList.remove('hidden');
-        setTimeout(async () => {
-          timelineOverlay.classList.add('hidden'); timelineOverlayText.textContent = `處理中...`;
-          const dummyContent = "ClipCut Export Placeholder - 這裡在實際產品中會是轉檔後的 mp4 二進制資料";
-          const dummyBlob = new Blob([dummyContent], { type: 'video/mp4' });
-          let safeFileName = clip.name.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5]/g, '_'); if(!safeFileName) safeFileName = "Clip";
-          const exportFileName = `ClipCut_${safeFileName}.mp4`;
-          const isMobile = /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-          if (navigator.share && isMobile) {
-            try {
-              const fileToShare = new File([dummyBlob], exportFileName, { type: 'video/mp4' });
-              await navigator.share({ title: `匯出影片: ${clip.name}`, text: '這是我用 ClipCut Web 剪輯出來的片段！', files: [fileToShare] });
-              showToast("分享/儲存成功！");
-            } catch (error) { triggerDirectDownload(dummyBlob, exportFileName); }
-          } else triggerDirectDownload(dummyBlob, exportFileName);
-        }, 1500);
-      } else showToast("請先在時間軸上選取片段");
-    });
-    
-    function triggerDirectDownload(blob, fileName) {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = fileName;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-        showToast(`已下載檔案: ${fileName}`);
+    // ==============================================================
+    // v1.5 real browser export. Records actual rendered frames, never a
+    // text placeholder carrying a false .mp4 extension.
+    // ==============================================================
+    function chooseExportFormat() {
+      if (!window.MediaRecorder) throw new Error("此瀏覽器不支援 MediaRecorder 匯出");
+      const candidates = [
+        { mime: 'video/mp4;codecs=avc1.42E01E', ext: 'mp4' },
+        { mime: 'video/mp4', ext: 'mp4' },
+        { mime: 'video/webm;codecs=vp9', ext: 'webm' },
+        { mime: 'video/webm;codecs=vp8', ext: 'webm' },
+        { mime: 'video/webm', ext: 'webm' }
+      ];
+      for (const item of candidates) {
+        if (!MediaRecorder.isTypeSupported || MediaRecorder.isTypeSupported(item.mime)) return item;
+      }
+      throw new Error("此瀏覽器沒有可用的 MP4 或 WebM 編碼器");
     }
+
+    function safeExportName(name) {
+      return String(name || 'ClipCut Export').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'ClipCut Export';
+    }
+
+    async function seekExportVideo(element, time) {
+      if (Math.abs(element.currentTime - time) < 0.025) return;
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { cleanup(); reject(new Error("影片定位逾時")); }, 8000);
+        const cleanup = () => {
+          clearTimeout(timer);
+          element.removeEventListener('seeked', done);
+          element.removeEventListener('error', failed);
+        };
+        const done = () => { cleanup(); resolve(); };
+        const failed = () => { cleanup(); reject(new Error("影片定位失敗")); };
+        element.addEventListener('seeked', done, { once: true });
+        element.addEventListener('error', failed, { once: true });
+        try { element.currentTime = Math.max(0, Math.min(time, element.duration || time)); }
+        catch (error) { cleanup(); reject(error); }
+      });
+    }
+
+    async function loadExportSource(element, src) {
+      if (element.src === src && element.readyState >= 2) return;
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { cleanup(); reject(new Error("來源影片載入逾時")); }, 12000);
+        const cleanup = () => {
+          clearTimeout(timer);
+          element.removeEventListener('loadeddata', done);
+          element.removeEventListener('error', failed);
+        };
+        const done = () => { cleanup(); resolve(); };
+        const failed = () => { cleanup(); reject(new Error("來源影片無法載入")); };
+        element.addEventListener('loadeddata', done, { once: true });
+        element.addEventListener('error', failed, { once: true });
+        element.src = src;
+        element.load();
+      });
+    }
+
+    function drawExportFrame(ctx, canvas, sourceVideo) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const vw = sourceVideo.videoWidth || canvas.width;
+      const vh = sourceVideo.videoHeight || canvas.height;
+      const scale = Math.min(canvas.width / vw, canvas.height / vh);
+      const dw = vw * scale;
+      const dh = vh * scale;
+      ctx.drawImage(sourceVideo, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+    }
+
+    async function exportTimelineRange(startSec, endSec, baseName) {
+      if (!(endSec > startSec)) throw new Error("匯出範圍無效");
+      const format = chooseExportFormat();
+      if (!HTMLCanvasElement.prototype.captureStream) throw new Error("此瀏覽器不支援 Canvas 影片匯出");
+
+      const firstMap = mapTimelineToSource(startSec);
+      if (firstMap.clipIndex < 0) throw new Error("匯出範圍沒有影片");
+      const firstMedia = state.mediaPool[firstMap.mediaId];
+      if (!firstMedia) throw new Error("找不到來源影片");
+
+      const sourceVideo = document.createElement('video');
+      sourceVideo.muted = true;
+      sourceVideo.playsInline = true;
+      sourceVideo.preload = 'auto';
+      sourceVideo.style.display = 'none';
+      document.body.appendChild(sourceVideo);
+
+      let recorder = null;
+      let stream = null;
+      try {
+        await loadExportSource(sourceVideo, firstMedia.src);
+        const sourceWidth = sourceVideo.videoWidth || 1280;
+        const sourceHeight = sourceVideo.videoHeight || 720;
+        const maxEdge = 1280;
+        const outputScale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
+        const exportCanvas = document.createElement('canvas');
+        exportCanvas.width = Math.max(2, Math.round(sourceWidth * outputScale / 2) * 2);
+        exportCanvas.height = Math.max(2, Math.round(sourceHeight * outputScale / 2) * 2);
+        const exportCtx = exportCanvas.getContext('2d', { alpha: false });
+        stream = exportCanvas.captureStream(30);
+
+        const chunks = [];
+        recorder = new MediaRecorder(stream, {
+          mimeType: format.mime,
+          videoBitsPerSecond: 6000000
+        });
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) chunks.push(event.data);
+        };
+        const stopped = new Promise((resolve, reject) => {
+          recorder.onstop = resolve;
+          recorder.onerror = (event) => reject(event.error || new Error("MediaRecorder 編碼失敗"));
+        });
+        recorder.start(1000);
+
+        const exportDuration = endSec - startSec;
+        const startedAt = performance.now();
+        let activeMediaId = null;
+        let previousSourceTime = -1;
+
+        while (true) {
+          const elapsed = (performance.now() - startedAt) / 1000;
+          if (elapsed >= exportDuration) break;
+          const timelineTime = Math.min(endSec - 0.001, startSec + elapsed);
+          const mapped = mapTimelineToSource(timelineTime);
+          if (mapped.clipIndex < 0) break;
+          const media = state.mediaPool[mapped.mediaId];
+          if (!media) throw new Error("匯出期間找不到來源媒體");
+
+          if (activeMediaId !== mapped.mediaId) {
+            await loadExportSource(sourceVideo, media.src);
+            activeMediaId = mapped.mediaId;
+            previousSourceTime = -1;
+          }
+          // Follow the edit timeline exactly, including trims, cuts and speed.
+          if (previousSourceTime < 0 || Math.abs(sourceVideo.currentTime - mapped.sourceTime) > 0.08) {
+            await seekExportVideo(sourceVideo, mapped.sourceTime);
+          }
+          previousSourceTime = mapped.sourceTime;
+          drawExportFrame(exportCtx, exportCanvas, sourceVideo);
+          const percent = Math.min(100, Math.round((elapsed / exportDuration) * 100));
+          timelineOverlayText.textContent = `正在匯出 ${percent}% (${format.ext.toUpperCase()})`;
+          await new Promise((resolve) => setTimeout(resolve, 1000 / 30));
+        }
+
+        drawExportFrame(exportCtx, exportCanvas, sourceVideo);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        recorder.stop();
+        await stopped;
+
+        if (!chunks.length) throw new Error("編碼器沒有產生任何影片資料");
+        const actualMime = recorder.mimeType || format.mime;
+        const actualExt = actualMime.includes('mp4') ? 'mp4' : 'webm';
+        const blob = new Blob(chunks, { type: actualMime });
+        if (blob.size < 1024) throw new Error("匯出的影片資料不完整");
+        const fileName = `${safeExportName(baseName)}.${actualExt}`;
+        await saveExportBlob(blob, fileName);
+        console.log(`匯出完成: ${fileName}, MIME: ${actualMime}, ${(blob.size / 1048576).toFixed(2)} MB`);
+        showToast(`匯出完成: ${fileName}`);
+      } finally {
+        if (recorder && recorder.state !== 'inactive') {
+          try { recorder.stop(); } catch (_) {}
+        }
+        if (stream) stream.getTracks().forEach((track) => track.stop());
+        try { sourceVideo.pause(); } catch (_) {}
+        sourceVideo.removeAttribute('src');
+        try { sourceVideo.load(); } catch (_) {}
+        sourceVideo.remove();
+      }
+    }
+
+    async function saveExportBlob(blob, fileName) {
+      const file = new File([blob], fileName, { type: blob.type });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ title: fileName, files: [file] });
+          return;
+        } catch (error) {
+          if (error && error.name === 'AbortError') throw new Error("使用者取消儲存");
+          console.warn(`分享失敗，改用直接下載: ${safeErrorText(error)}`);
+        }
+      }
+      triggerDirectDownload(blob, fileName);
+    }
+
+    function triggerDirectDownload(blob, fileName) {
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    }
+
+    async function runExport(startSec, endSec, name) {
+      if (state.isPlaying) togglePlay();
+      timelineOverlayText.textContent = "準備真實影片匯出...";
+      timelineOverlay.classList.remove('hidden');
+      try {
+        await exportTimelineRange(startSec, endSec, name);
+      } catch (error) {
+        console.error(`匯出失敗: ${safeErrorText(error)}`);
+        showToast(`匯出失敗: ${safeErrorText(error)}`);
+      } finally {
+        timelineOverlay.classList.add('hidden');
+        timelineOverlayText.textContent = "處理中...";
+      }
+    }
+
+    document.getElementById('btnExportClip').addEventListener('click', () => {
+      if (state.selectedClipIdx < 0 || state.selectedClipIdx >= state.clips.length) {
+        showToast("請先在時間軸上選取片段");
+        return;
+      }
+      let start = 0;
+      for (let i = 0; i < state.selectedClipIdx; i++) {
+        const item = state.clips[i];
+        start += (item.outPoint - item.inPoint) / (item.speed || 1);
+      }
+      const clip = state.clips[state.selectedClipIdx];
+      const duration = (clip.outPoint - clip.inPoint) / (clip.speed || 1);
+      runExport(start, start + duration, clip.name || `Clip ${state.selectedClipIdx + 1}`);
+    });
+
+    document.getElementById('btnExport').addEventListener('click', () => {
+      const duration = getTimelineDuration();
+      if (duration <= 0) {
+        showToast("時間軸沒有可匯出的影片");
+        return;
+      }
+      runExport(0, duration, 'ClipCut Full Timeline');
+    });
 
     // ==============================================================
     // v1.3 iOS gesture control: page zoom is disabled; pinch zoom is
