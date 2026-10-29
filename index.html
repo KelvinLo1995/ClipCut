@@ -24,6 +24,23 @@
     #logPanel { transition: height 0.3s ease; }
     .log-expanded { height: 40vh !important; }
     .log-collapsed { height: 40px !important; }
+
+    /* v1.3: iOS must not zoom or pan the whole application. */
+    html, body {
+      width: 100%;
+      overflow: hidden;
+      touch-action: none;
+      -webkit-text-size-adjust: 100%;
+    }
+    button, input, canvas, section, div {
+      touch-action: manipulation;
+    }
+    #timelineContainer,
+    #timelineCanvas {
+      touch-action: none !important;
+      -webkit-user-select: none;
+      user-select: none;
+    }
   </style>
 </head>
 <body class="w-full h-[100dvh] flex flex-col overflow-hidden">
@@ -41,7 +58,7 @@
     <div class="flex items-center gap-1.5 flex-shrink-0">
       <i class="ph ph-scissors text-yellow-500 text-xl sm:text-2xl"></i>
       <h1 class="font-bold text-sm sm:text-lg tracking-wide text-gray-100 whitespace-nowrap">ClipCut</h1>
-      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.2</span>
+      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.3</span>
     </div>
     <div class="flex items-center gap-1 sm:gap-3 flex-shrink-0">
       <button id="btnNewProject" class="flex items-center gap-1 text-xs sm:text-sm bg-gray-800 text-gray-300 px-2.5 py-1.5 rounded-full font-medium active:scale-95 transition whitespace-nowrap flex-shrink-0">
@@ -1142,7 +1159,7 @@
                       const sourceT = (j / media.waveformData.length) * media.duration;
                       const timelineT = acc + (sourceT - clip.inPoint) / clipSpeed;
                       if (timelineT - lastTimelinePeak > minInterval) {
-                          const peakStart = Math.max(acc, timelineT - 0.05);
+                          const peakStart = timelineT;
                           reviewPoints.push({ timelineSec: peakStart });
                           lastTimelinePeak = timelineT;
                       }
@@ -1294,26 +1311,103 @@
         showToast(`已下載檔案: ${fileName}`);
     }
 
-    document.addEventListener('touchmove', function (e) { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
-    let initialPinchDistance = null; let initialZoomFactor = 1.0;
-    timelineCanvas.addEventListener('touchstart', (e) => {
-      if (e.touches.length === 2) {
-        initialPinchDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-        initialZoomFactor = state.zoomFactor; state.isDraggingScrubber = false; state.isPanning = false; state.isDraggingClip = false;
+    // ==============================================================
+    // v1.3 iOS gesture control: page zoom is disabled; pinch zoom is
+    // handled only by the timeline and keeps the time under the fingers.
+    // ==============================================================
+    function isInsideTimeline(target) {
+      return target === timelineCanvas || timelineCanvas.contains(target) ||
+             target === document.getElementById('timelineContainer');
+    }
+
+    // Safari fires proprietary gesture events for viewport pinch zoom.
+    // Cancel them globally. Timeline scaling is handled below with Touch Events.
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach((eventName) => {
+      document.addEventListener(eventName, (event) => event.preventDefault(), { passive: false });
+    });
+
+    // Stop two-finger browser zoom outside the timeline. Single-finger taps,
+    // buttons, horizontal tool scrolling and normal app interaction remain active.
+    document.addEventListener('touchmove', (event) => {
+      if (event.touches.length > 1 && !isInsideTimeline(event.target)) {
+        event.preventDefault();
       }
-    }, { passive: false });
-    timelineCanvas.addEventListener('touchmove', (e) => {
-      if (e.touches.length === 2) {
-        e.preventDefault(); 
-        if (initialPinchDistance) {
-          const currentDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-          const scale = currentDistance / initialPinchDistance;
-          state.zoomFactor = Math.max(1.0, Math.min(initialZoomFactor * scale, 50.0));
-          clampScroll(); drawTimeline();
-        }
+    }, { passive: false, capture: true });
+
+    // Prevent double-tap page zoom while preserving ordinary single taps.
+    let lastTouchEndAt = 0;
+    document.addEventListener('touchend', (event) => {
+      if (event.changedTouches.length !== 1) return;
+      const now = Date.now();
+      if (now - lastTouchEndAt < 300 && !isInsideTimeline(event.target)) {
+        event.preventDefault();
       }
+      lastTouchEndAt = now;
+    }, { passive: false, capture: true });
+
+    let initialPinchDistance = null;
+    let initialZoomFactor = 1.0;
+    let pinchAnchorTimelineSec = 0;
+    let pinchAnchorRatio = 0.5;
+    let timelinePinching = false;
+
+    function getPinchInfo(touches) {
+      const rect = timelineCanvas.getBoundingClientRect();
+      const x1 = touches[0].clientX;
+      const y1 = touches[0].clientY;
+      const x2 = touches[1].clientX;
+      const y2 = touches[1].clientY;
+      const centerX = ((x1 + x2) / 2) - rect.left;
+      return {
+        distance: Math.hypot(x1 - x2, y1 - y2),
+        centerX,
+        ratio: Math.max(0, Math.min(1, centerX / Math.max(1, rect.width)))
+      };
+    }
+
+    timelineCanvas.addEventListener('touchstart', (event) => {
+      if (event.touches.length !== 2) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      const pinch = getPinchInfo(event.touches);
+      initialPinchDistance = Math.max(1, pinch.distance);
+      initialZoomFactor = state.zoomFactor;
+      pinchAnchorRatio = pinch.ratio;
+      pinchAnchorTimelineSec = state.scrollOffsetSec + pinchAnchorRatio * getVisibleDuration();
+      timelinePinching = true;
+
+      state.isDraggingScrubber = false;
+      state.isPanning = false;
+      state.isDraggingClip = false;
     }, { passive: false });
-    timelineCanvas.addEventListener('touchend', (e) => { if (e.touches.length < 2) initialPinchDistance = null; });
+
+    timelineCanvas.addEventListener('touchmove', (event) => {
+      if (!timelinePinching || event.touches.length !== 2 || !initialPinchDistance) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      const pinch = getPinchInfo(event.touches);
+      const scale = pinch.distance / initialPinchDistance;
+      state.zoomFactor = Math.max(1.0, Math.min(initialZoomFactor * scale, 50.0));
+
+      // Keep the exact timeline timestamp under the pinch centre. This avoids
+      // the timeline jumping left or right while the fingers zoom.
+      state.scrollOffsetSec = pinchAnchorTimelineSec - pinch.ratio * getVisibleDuration();
+      clampScroll();
+      drawTimeline();
+    }, { passive: false });
+
+    function endTimelinePinch(event) {
+      if (event.touches.length >= 2) return;
+      timelinePinching = false;
+      initialPinchDistance = null;
+      clampScroll();
+      drawTimeline();
+    }
+
+    timelineCanvas.addEventListener('touchend', endTimelinePinch, { passive: false });
+    timelineCanvas.addEventListener('touchcancel', endTimelinePinch, { passive: false });
   </script>
 </body>
 </html>
