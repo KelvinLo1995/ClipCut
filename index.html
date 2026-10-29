@@ -89,7 +89,7 @@
     <div class="flex items-center gap-1.5 flex-shrink-0">
       <i class="ph ph-scissors text-yellow-500 text-xl sm:text-2xl"></i>
       <h1 class="font-bold text-sm sm:text-lg tracking-wide text-gray-100 whitespace-nowrap">ClipCut</h1>
-      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.3.1</span>
+      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.4</span>
     </div>
     <div class="flex items-center gap-1 sm:gap-3 flex-shrink-0">
       <button id="btnNewProject" class="flex items-center gap-1 text-xs sm:text-sm bg-gray-800 text-gray-300 px-2.5 py-1.5 rounded-full font-medium active:scale-95 transition whitespace-nowrap flex-shrink-0">
@@ -571,12 +571,22 @@
         const wave = new Float32Array(numPoints);
         const freq = new Float32Array(numPoints);
         const snr = new Float32Array(numPoints);
+        const waveformTimes = new Float64Array(numPoints);
+        const capturedSourceTimes = audioBuffer._sourceTimes || null;
 
         for (let i = 0; i < numPoints; i++) {
           let sumSquares = 0, count = 0, crossings = 0, prevSign = 0;
+          let peakAbs = -1;
+          let peakSampleIndex = Math.min(channelData.length - 1, i * step);
           for (let j = 0; j < step && (i * step + j) < channelData.length; j++) {
-            const val = channelData[i * step + j];
+            const sampleIndex = i * step + j;
+            const val = channelData[sampleIndex];
             sumSquares += val * val;
+            const absVal = Math.abs(val);
+            if (absVal > peakAbs) {
+              peakAbs = absVal;
+              peakSampleIndex = sampleIndex;
+            }
             const sign = Math.sign(val);
             if (j > 0 && sign !== 0 && prevSign !== 0 && sign !== prevSign) crossings++;
             if (sign !== 0) prevSign = sign;
@@ -586,6 +596,13 @@
             wave[i] = Math.min(1, Math.sqrt(sumSquares / count) * 3);
             freq[i] = Math.min(1, (crossings / count) * 4);
           }
+
+          // Windows/direct decode uses exact sample time. iOS capture uses the
+          // video.currentTime clock recorded for this exact PCM peak sample.
+          const mappedTime = capturedSourceTimes && Number.isFinite(capturedSourceTimes[peakSampleIndex])
+            ? capturedSourceTimes[peakSampleIndex]
+            : peakSampleIndex / audioBuffer.sampleRate;
+          waveformTimes[i] = Math.max(0, Math.min(state.mediaPool[mediaId].duration, mappedTime));
         }
 
         const bgRange = Math.max(1, Math.floor((0.5 / Math.max(audioBuffer.duration, 0.001)) * numPoints) || 10);
@@ -605,6 +622,9 @@
         media.waveformData = wave;
         media.freqData = freq;
         media.snrData = snr;
+        media.waveformTimes = waveformTimes;
+        media.waveformTimingMode = capturedSourceTimes ? "video-clock" : "sample-clock";
+        console.log(`波形時間基準: ${media.waveformTimingMode}`);
         drawTimeline();
         console.log("真實音訊波形分析完成！");
         showToast("真實音訊波形分析完成！");
@@ -629,10 +649,12 @@
       const dur = (duration > 0 && isFinite(duration)) ? duration : 10;
       const totalSamples = Math.max(1, Math.ceil(dur * captureCtx.sampleRate));
       const pcmData = new Float32Array(totalSamples);
+      const pcmSourceTimes = new Float64Array(totalSamples);
       let sourceNode = null;
       let processorNode = null;
       let silentGain = null;
       let writeIndex = 0;
+      let lastMappedVideoTime = 0;
       let finished = false;
       let timeoutId = null;
 
@@ -682,6 +704,9 @@
             const sampleCount = Math.min(writeIndex, pcmData.length);
             const output = captureCtx.createBuffer(1, sampleCount, captureCtx.sampleRate);
             output.copyToChannel(pcmData.subarray(0, sampleCount), 0);
+            // Custom timing map consumed immediately by waveform analysis.
+            output._sourceTimes = pcmSourceTimes.slice(0, sampleCount);
+            output._timingMode = "video-clock";
             await cleanup();
             resolve(output);
           } catch (error) {
@@ -692,7 +717,7 @@
 
         try {
           sourceNode = captureCtx.createMediaElementSource(probeVideo);
-          processorNode = captureCtx.createScriptProcessor(4096, 1, 1);
+          processorNode = captureCtx.createScriptProcessor(2048, 1, 1);
           silentGain = captureCtx.createGain();
           silentGain.gain.value = 0;
 
@@ -701,9 +726,22 @@
             const input = event.inputBuffer.getChannelData(0);
             const amount = Math.min(input.length, pcmData.length - writeIndex);
             if (amount > 0) {
+              // Tie every PCM sample to the media element clock instead of
+              // assuming captured PCM length equals video duration.
+              const blockEndVideoTime = Math.max(0, Math.min(dur, probeVideo.currentTime));
+              const blockMediaDuration = amount / captureCtx.sampleRate;
+              let blockStartVideoTime = Math.max(0, blockEndVideoTime - blockMediaDuration);
+              if (blockStartVideoTime < lastMappedVideoTime) blockStartVideoTime = lastMappedVideoTime;
+              const mappedDuration = Math.max(0, blockEndVideoTime - blockStartVideoTime);
+
               pcmData.set(input.subarray(0, amount), writeIndex);
+              for (let sample = 0; sample < amount; sample++) {
+                const ratio = amount > 1 ? sample / (amount - 1) : 1;
+                pcmSourceTimes[writeIndex + sample] = blockStartVideoTime + mappedDuration * ratio;
+              }
+              lastMappedVideoTime = Math.max(lastMappedVideoTime, blockEndVideoTime);
               writeIndex += amount;
-              const percent = Math.min(100, Math.round((writeIndex / pcmData.length) * 100));
+              const percent = Math.min(100, Math.round((blockEndVideoTime / dur) * 100));
               if (onStatus) onStatus(`正在擷取真實音訊… ${percent}%`);
             }
             if (writeIndex >= pcmData.length) finish();
@@ -718,7 +756,7 @@
           sourceNode.connect(processorNode);
           processorNode.connect(silentGain);
           silentGain.connect(captureCtx.destination);
-          probeVideo.playbackRate = 2;
+          probeVideo.playbackRate = 1;
 
           // These calls intentionally happen directly within the button click stack.
           const resumePromise = captureCtx.state === 'suspended' ? captureCtx.resume() : Promise.resolve();
@@ -728,7 +766,7 @@
           timeoutId = setTimeout(() => {
             if (writeIndex > 0) finish();
             else fail(new Error("iOS 音訊擷取逾時，未收到任何樣本"));
-          }, Math.max(18000, (dur / 2) * 1000 + 10000));
+          }, Math.max(25000, dur * 1000 + 12000));
         } catch (error) {
           fail(error);
         }
@@ -1177,8 +1215,14 @@
           const dur = (clip.outPoint - clip.inPoint) / clipSpeed;
           const media = state.mediaPool[clip.mediaId];
           if (media && media.waveformData && media.duration > 0) {
-              const startIdx = Math.floor((clip.inPoint / media.duration) * media.waveformData.length);
-              const endIdx = Math.floor((clip.outPoint / media.duration) * media.waveformData.length);
+              const hasExactTimes = media.waveformTimes && media.waveformTimes.length === media.waveformData.length;
+              const startIdx = hasExactTimes
+                  ? Math.max(0, media.waveformTimes.findIndex((time) => time >= clip.inPoint))
+                  : Math.floor((clip.inPoint / media.duration) * media.waveformData.length);
+              let endIdx = hasExactTimes
+                  ? media.waveformTimes.findIndex((time) => time > clip.outPoint)
+                  : Math.floor((clip.outPoint / media.duration) * media.waveformData.length);
+              if (endIdx < 0) endIdx = media.waveformData.length;
               for (let j = startIdx; j < endIdx; j++) {
                   const currentSnr = (media.snrData && media.snrData[j]) ? media.snrData[j] : 0;
                   const currentFreq = (media.freqData && media.freqData[j]) ? media.freqData[j] : 0;
@@ -1187,7 +1231,9 @@
                   // 真實拍手特徵：高頻與 SNR 突波 (放寬絕對音量，專注於物理特徵)
                   const isSpike = currentSnr > 0.1 && currentFreq > 0.1 && currentAmp > 0.03;
                   if (isSpike) {
-                      const sourceT = (j / media.waveformData.length) * media.duration;
+                      const sourceT = (media.waveformTimes && Number.isFinite(media.waveformTimes[j]))
+                          ? media.waveformTimes[j]
+                          : (j / media.waveformData.length) * media.duration;
                       const timelineT = acc + (sourceT - clip.inPoint) / clipSpeed;
                       if (timelineT - lastTimelinePeak > minInterval) {
                           const peakStart = timelineT;
