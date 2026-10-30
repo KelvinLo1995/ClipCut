@@ -89,7 +89,7 @@
     <div class="flex items-center gap-1.5 flex-shrink-0">
       <i class="ph ph-scissors text-yellow-500 text-xl sm:text-2xl"></i>
       <h1 class="font-bold text-sm sm:text-lg tracking-wide text-gray-100 whitespace-nowrap">ClipCut</h1>
-      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.8.2</span>
+      <span class="text-[10px] sm:text-xs font-semibold text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">v1.9</span>
     </div>
     <div class="flex items-center gap-1 sm:gap-3 flex-shrink-0">
       <button id="btnNewProject" class="flex items-center gap-1 text-xs sm:text-sm bg-gray-800 text-gray-300 px-2.5 py-1.5 rounded-full font-medium active:scale-95 transition whitespace-nowrap flex-shrink-0">
@@ -365,6 +365,7 @@
       undoStack: [], redoStack: [],
       selectedClipIdx: -1, zoomFactor: 1.0, scrollOffsetSec: 0.0,
       isDraggingScrubber: false, isDraggingClip: false, draggedClipIdx: -1, dragClipInitialX: 0,
+      isTrimmingClip: false, trimEdge: null, trimClipIdx: -1, trimHistorySaved: false,
       isPanning: false, lastPanX: 0, lastPlayedClipIndex: -1,
       clapReviewPoints: [], clapReviewIndex: 0, playUntil: undefined
     };
@@ -868,6 +869,15 @@
         tCtx.lineWidth = isSelected ? 2 : 1;
         tCtx.beginPath(); tCtx.roundRect(x1, TRACK_CONFIG.videoY + 2, clipW, TRACK_CONFIG.videoH - 4, 6);
         tCtx.fill(); tCtx.stroke();
+        if (isSelected) {
+          const handleW = Math.min(12, Math.max(8, clipW / 4));
+          tCtx.fillStyle = "#facc15";
+          tCtx.fillRect(x1, TRACK_CONFIG.videoY + 2, handleW, TRACK_CONFIG.videoH - 4);
+          tCtx.fillRect(x1 + clipW - handleW, TRACK_CONFIG.videoY + 2, handleW, TRACK_CONFIG.videoH - 4);
+          tCtx.fillStyle = "#422006"; tCtx.font = "bold 14px sans-serif"; tCtx.textAlign = "center";
+          tCtx.fillText("‹", x1 + handleW / 2, TRACK_CONFIG.videoY + TRACK_CONFIG.videoH / 2 + 5);
+          tCtx.fillText("›", x1 + clipW - handleW / 2, TRACK_CONFIG.videoY + TRACK_CONFIG.videoH / 2 + 5);
+        }
         if (clipW > 35) {
           tCtx.fillStyle = "#ffffff"; tCtx.font = "bold 11px sans-serif"; tCtx.textAlign = "left";
           tCtx.fillText(`${clip.name}${clipSpeed !== 1.0 ? ' ('+clipSpeed+'x)' : ''}`, x1 + 6, TRACK_CONFIG.videoY + 20);
@@ -1172,10 +1182,35 @@
       return { x: clientX - rect.left, y: clientY - rect.top };
     }
 
+    function getClipTimelineBounds(index) {
+      let start = 0;
+      for (let i = 0; i < index; i++) start += (state.clips[i].outPoint - state.clips[i].inPoint) / (state.clips[i].speed || 1);
+      const clip = state.clips[index];
+      const duration = (clip.outPoint - clip.inPoint) / (clip.speed || 1);
+      return { start, end: start + duration };
+    }
+
+    function hitTrimHandle(x, y) {
+      if (y < TRACK_CONFIG.videoY || y > TRACK_CONFIG.videoY + TRACK_CONFIG.videoH) return null;
+      const idx = state.selectedClipIdx;
+      if (idx < 0 || idx >= state.clips.length) return null;
+      const bounds = getClipTimelineBounds(idx);
+      const leftX = timeToX(bounds.start), rightX = timeToX(bounds.end);
+      const radius = 18;
+      if (Math.abs(x - leftX) <= radius) return { index: idx, edge: 'start' };
+      if (Math.abs(x - rightX) <= radius) return { index: idx, edge: 'end' };
+      return null;
+    }
+
     timelineCanvas.addEventListener('pointerdown', (e) => {
       if (getTimelineDuration() <= 0) return;
       if (state.isPlaying) togglePlay(); 
       const pos = getTouchPos(e);
+      const trimHit = hitTrimHandle(pos.x, pos.y);
+      if (trimHit) {
+        state.isTrimmingClip = true; state.trimEdge = trimHit.edge; state.trimClipIdx = trimHit.index;
+        state.trimHistorySaved = false; timelineCanvas.setPointerCapture?.(e.pointerId); return;
+      }
       if (pos.y <= TRACK_CONFIG.rulerH) { state.isPanning = true; state.lastPanX = pos.x; return; }
       if (pos.y > TRACK_CONFIG.videoY && pos.y < TRACK_CONFIG.snrY + TRACK_CONFIG.snrH) {
         const clickedTime = xToTime(pos.x);
@@ -1198,8 +1233,29 @@
     });
 
     timelineCanvas.addEventListener('pointermove', (e) => {
-      if (!state.isDraggingScrubber && !state.isPanning && !state.isDraggingClip) return;
+      if (!state.isDraggingScrubber && !state.isPanning && !state.isDraggingClip && !state.isTrimmingClip) return;
       const pos = getTouchPos(e);
+      if (state.isTrimmingClip) {
+        const clip = state.clips[state.trimClipIdx];
+        const media = clip && state.mediaPool[clip.mediaId];
+        if (!clip || !media) return;
+        if (!state.trimHistorySaved) { saveHistory(); state.trimHistorySaved = true; }
+        const speed = clip.speed || 1;
+        const bounds = getClipTimelineBounds(state.trimClipIdx);
+        const minimumSourceDuration = 0.10;
+        if (state.trimEdge === 'start') {
+          const deltaTimeline = xToTime(pos.x) - bounds.start;
+          clip.inPoint = Math.max(0, Math.min(clip.outPoint - minimumSourceDuration, clip.inPoint + deltaTimeline * speed));
+          state.currentTime = bounds.start;
+        } else {
+          const deltaTimeline = xToTime(pos.x) - bounds.end;
+          clip.outPoint = Math.min(media.duration, Math.max(clip.inPoint + minimumSourceDuration, clip.outPoint + deltaTimeline * speed));
+        }
+        const previewTime = state.trimEdge === 'start' ? clip.inPoint : clip.outPoint;
+        if (state.currentMediaId !== clip.mediaId) { state.currentMediaId = clip.mediaId; video.src = media.src; video.load(); }
+        video.currentTime = Math.max(0, Math.min(media.duration, previewTime));
+        clampScroll(); drawTimeline(); return;
+      }
       if (state.isPanning) {
         const dx = pos.x - state.lastPanX; state.lastPanX = pos.x;
         const timeShift = (dx / timelineCanvas.getBoundingClientRect().width) * getVisibleDuration();
@@ -1233,7 +1289,11 @@
       }
     });
 
-    window.addEventListener('pointerup', () => { state.isDraggingScrubber = false; state.isPanning = false; state.isDraggingClip = false; });
+    window.addEventListener('pointerup', () => {
+      if (state.isTrimmingClip) showToast(`片段${state.trimEdge === 'start' ? '起點' : '終點'}已調整`);
+      state.isDraggingScrubber = false; state.isPanning = false; state.isDraggingClip = false;
+      state.isTrimmingClip = false; state.trimEdge = null; state.trimClipIdx = -1; state.trimHistorySaved = false;
+    });
     function updateSelectedClipUI() {
       if (state.selectedClipIdx >= 0 && state.selectedClipIdx < state.clips.length) speedIndicator.textContent = `${state.clips[state.selectedClipIdx].speed || 1.0}x`;
       else speedIndicator.textContent = `1.0x`;
